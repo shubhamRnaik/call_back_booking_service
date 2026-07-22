@@ -1,0 +1,17 @@
+fastapi
+uvicorn
+uvloop; platform_system != "Windows"
+pydantic
+pydantic-settings
+websockets
+aiohttp
+python-dotenv
+indic-numtowords
+sarvamai
+pytest
+pytest-asyncio
+pytest-cov
+google-genai
+openai
+pyaudio
+numpy

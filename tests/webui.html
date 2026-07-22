@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice Streaming WebSocket Client</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 600px;
+            width: 100%;
+            padding: 30px;
+        }
+        
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 24px;
+        }
+        
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        
+        .status {
+            padding: 12px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        
+        .status.connecting {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+        
+        .status.connected {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        label {
+            display: block;
+            color: #333;
+            font-weight: 500;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+        
+        input, textarea, select {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: inherit;
+            transition: border-color 0.3s;
+        }
+        
+        input:focus, textarea:focus, select:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        
+        textarea {
+            resize: vertical;
+            min-height: 80px;
+        }
+        
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+        
+        button {
+            padding: 12px 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        button:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+        
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        
+        .output {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 6px;
+            padding: 15px;
+            margin-top: 20px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 12px;
+            color: #333;
+            line-height: 1.5;
+        }
+        
+        .log-entry {
+            margin-bottom: 8px;
+            padding: 8px;
+            border-left: 3px solid #667eea;
+            padding-left: 12px;
+        }
+        
+        .log-entry.info { border-left-color: #0066cc; }
+        .log-entry.success { border-left-color: #28a745; }
+        .log-entry.error { border-left-color: #dc3545; }
+        .log-entry.warning { border-left-color: #ffc107; }
+        
+        .audio-player {
+            margin-top: 20px;
+            padding: 15px;
+            background: #f0f3ff;
+            border-radius: 6px;
+            display: none;
+        }
+        
+        .audio-player.show {
+            display: block;
+        }
+        
+        audio {
+            width: 100%;
+            margin-top: 10px;
+        }
+        
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            margin-top: 15px;
+        }
+        
+        .stat {
+            background: white;
+            padding: 12px;
+            border-radius: 6px;
+            border: 1px solid #e9ecef;
+            text-align: center;
+        }
+        
+        .stat-label {
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 5px;
+        }
+        
+        .stat-value {
+            font-size: 18px;
+            font-weight: bold;
+            color: #667eea;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎙️ Voice Streaming Client</h1>
+        <p class="subtitle">Real-time Text-to-Speech via WebSocket</p>
+        
+        <div id="status" class="status connecting">
+        ⏳ Connecting to server...
+        </div>
+        
+        <div class="form-group">
+            <label>Language</label>
+            <select id="language">
+                <option value="hi-IN">Hindi (हिन्दी)</option>
+                <option value="ta-IN">Tamil (தமிழ்)</option>
+                <option value="te-IN">Telugu (తెలుగు)</option>
+                <option value="kn-IN">Kannada (ಕನ್ನಡ)</option>
+                <option value="mr-IN">Marathi (मराठी)</option>
+                <option value="bn-IN">Bengali (বাংলা)</option>
+                <option value="ml-IN">Malayalam (മലയാളം)</option>
+                <option value="gu-IN">Gujarati (ગુજરાતી)</option>
+            </select>
+        </div>
+        
+        <div class="form-row">
+            <div class="form-group">
+                <label>Speaker</label>
+                <input type="text" id="speaker" value="shubh" placeholder="e.g., shubh, meera">
+            </div>
+            <div class="form-group">
+                <label>Pace (0.5-2.0)</label>
+                <input type="number" id="pace" value="0.95" min="0.5" max="2.0" step="0.1">
+            </div>
+        </div>
+        
+        <div class="form-group">
+            <label>Text to Synthesize</label>
+            <textarea id="text" placeholder="Enter text here...">नमस्ते, यह एक परीक्षण है।</textarea>
+        </div>
+        
+        <button id="synthesize" onclick="synthesize()">🎤 Synthesize</button>
+        
+        <div class="audio-player" id="audioPlayer">
+            <label>🎧 Audio Output</label>
+            <audio id="audioOutput" controls></audio>
+            <div class="stats">
+                <div class="stat">
+                    <div class="stat-label">TTFB</div>
+                    <div class="stat-value" id="ttfbStat">-</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">Chunks</div>
+                    <div class="stat-value" id="chunksStat">-</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">Size</div>
+                    <div class="stat-value" id="sizeStat">-</div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="output" id="output"></div>
+    </div>
+    
+    <script>
+        let ws = null;
+        let audioBuffer = [];
+        let chunkCount = 0;
+        let totalBytes = 0;
+        let isStreaming = false;
+        
+        const statusEl = document.getElementById('status');
+        const synthesizeBtn = document.getElementById('synthesize');
+        const outputEl = document.getElementById('output');
+        const audioPlayer = document.getElementById('audioPlayer');
+        const audioOutput = document.getElementById('audioOutput');
+        
+        // Log function
+        function log(message, type = 'info') {
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            outputEl.appendChild(entry);
+            outputEl.scrollTop = outputEl.scrollHeight;
+        }
+        
+        // Connect to WebSocket
+        function connect() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const url = `${protocol}//localhost:8000/ws/v1/stream-voice`;
+            
+            log(`Connecting to ${url}...`, 'info');
+            
+            ws = new WebSocket(url);
+            
+            ws.onopen = () => {
+                statusEl.textContent = '✓ Connected to server';
+                statusEl.className = 'status connected';
+                synthesizeBtn.disabled = false;
+                log('✓ WebSocket connected', 'success');
+                
+                // Send initial config
+                const config = {
+                    type: 'config',
+                    data: {
+                        language: document.getElementById('language').value,
+                        speaker: document.getElementById('speaker').value,
+                        pace: parseFloat(document.getElementById('pace').value)
+                    }
+                };
+                ws.send(JSON.stringify(config));
+                log(`Config sent: ${JSON.stringify(config.data)}`, 'info');
+            };
+            
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    
+                    if (data.type === 'ttfb') {
+                        const ttfb = data.data.ttfb_ms;
+                        document.getElementById('ttfbStat').textContent = ttfb.toFixed(0) + 'ms';
+                        log(`⏱️  TTFB: ${ttfb.toFixed(2)}ms`, 'success');
+                    } else if (data.type === 'audio') {
+                        chunkCount++;
+                        const audioData = data.data.audio;
+                        const audioBytes = new Uint8Array(atob(audioData).split('').map(c => c.charCodeAt(0)));
+                        audioBuffer.push(audioBytes);
+                        totalBytes += audioBytes.length;
+                        document.getElementById('chunksStat').textContent = chunkCount;
+                        document.getElementById('sizeStat').textContent = (totalBytes / 1024).toFixed(1) + 'KB';
+                        if (chunkCount % 5 === 0) {
+                            log(`🎵 Received ${chunkCount} chunks (${totalBytes} bytes)`, 'info');
+                        }
+                    } else if (data.type === 'error') {
+                        log(`Error: ${data.data.error}`, 'error');
+                    } else if (data.type === 'done') {
+                        log('✓ Synthesis complete', 'success');
+                        
+                        // Create audio blob and play
+                        if (audioBuffer.length > 0) {
+                            const totalSize = audioBuffer.reduce((a, b) => a + b.length, 0);
+                            const audioData = new Uint8Array(totalSize);
+                            let offset = 0;
+                            audioBuffer.forEach(chunk => {
+                                audioData.set(chunk, offset);
+                                offset += chunk.length;
+                            });
+                            
+                            // Create WAV blob
+                            const wavBlob = createWavBlob(audioData);
+                            const url = URL.createObjectURL(wavBlob);
+                            audioOutput.src = url;
+                            audioPlayer.classList.add('show');
+                            
+                            log('✓ Audio ready to play', 'success');
+                        }
+                        
+                        synthesizeBtn.disabled = false;
+                    }
+                } catch (e) {
+                    log(`Parse error: ${e.message}`, 'error');
+                }
+            };
+            
+            ws.onerror = () => {
+                statusEl.textContent = '✗ Connection error';
+                statusEl.className = 'status error';
+                synthesizeBtn.disabled = true;
+                log('✗ WebSocket error', 'error');
+            };
+            
+            ws.onclose = () => {
+                statusEl.textContent = '✗ Disconnected';
+                statusEl.className = 'status error';
+                synthesizeBtn.disabled = true;
+                log('✗ WebSocket closed', 'error');
+                setTimeout(connect, 3000);
+            };
+        }
+        
+        function createWavBlob(audioData) {
+            const sampleRate = 8000;
+            const channels = 1;
+            const bitDepth = 16;
+            
+            const header = new ArrayBuffer(44);
+            const view = new DataView(header);
+            
+            const offset = audioData.length;
+            const fileSize = offset + 36;
+            const byteRate = sampleRate * channels * bitDepth / 8;
+            
+            view.setUint8(0, 'R'.charCodeAt(0));
+            view.setUint8(1, 'I'.charCodeAt(0));
+            view.setUint8(2, 'F'.charCodeAt(0));
+            view.setUint8(3, 'F'.charCodeAt(0));
+            view.setUint32(4, fileSize, true);
+            view.setUint8(8, 'W'.charCodeAt(0));
+            view.setUint8(9, 'A'.charCodeAt(0));
+            view.setUint8(10, 'V'.charCodeAt(0));
+            view.setUint8(11, 'E'.charCodeAt(0));
+            view.setUint8(12, 'f'.charCodeAt(0));
+            view.setUint8(13, 'm'.charCodeAt(0));
+            view.setUint8(14, 't'.charCodeAt(0));
+            view.setUint8(15, ' '.charCodeAt(0));
+            view.setUint32(16, 16, true);
+            view.setUint16(20, 1, true);
+            view.setUint16(22, channels, true);
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, byteRate, true);
+            view.setUint16(32, channels * bitDepth / 8, true);
+            view.setUint16(34, bitDepth, true);
+            view.setUint8(36, 'd'.charCodeAt(0));
+            view.setUint8(37, 'a'.charCodeAt(0));
+            view.setUint8(38, 't'.charCodeAt(0));
+            view.setUint8(39, 'a'.charCodeAt(0));
+            view.setUint32(40, offset, true);
+            
+            const fullBuffer = new Uint8Array(header.byteLength + audioData.length);
+            fullBuffer.set(new Uint8Array(header), 0);
+            fullBuffer.set(audioData, header.byteLength);
+            
+            return new Blob([fullBuffer], { type: 'audio/wav' });
+        }
+        
+        function synthesize() {
+            const text = document.getElementById('text').value;
+            if (!text.trim()) {
+                log('⚠️  Empty text', 'warning');
+                return;
+            }
+            
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                log('✗ Not connected', 'error');
+                return;
+            }
+            
+            // Reset
+            audioBuffer = [];
+            chunkCount = 0;
+            totalBytes = 0;
+            audioPlayer.classList.remove('show');
+            document.getElementById('ttfbStat').textContent = '-';
+            document.getElementById('chunksStat').textContent = '-';
+            document.getElementById('sizeStat').textContent = '-';
+            
+            synthesizeBtn.disabled = true;
+            
+            // Send text
+            const textMsg = {
+                type: 'text',
+                data: { text }
+            };
+            ws.send(JSON.stringify(textMsg));
+            log(`📤 Sent: ${text.substring(0, 50)}${text.length > 50 ? '...' : ''}`, 'info');
+        }
+        
+        // Initialize
+        connect();
+    </script>
+</body>
+</html>

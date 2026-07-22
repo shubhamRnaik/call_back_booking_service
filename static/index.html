@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice Call</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        .phone {
+            background: #1a1a2e;
+            border-radius: 40px;
+            padding: 20px;
+            width: 100%;
+            max-width: 450px;
+            box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6);
+            border: 12px solid #0f3460;
+        }
+        .screen {
+            background: linear-gradient(135deg, #0f3460 0%, #16213e 100%);
+            border-radius: 30px;
+            padding: 30px 20px;
+            text-align: center;
+            color: white;
+            min-height: 550px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+        .header { margin-bottom: 20px; }
+        .caller-name { font-size: 26px; font-weight: bold; margin-bottom: 8px; }
+        .status-badge {
+            display: inline-block;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-bottom: 10px;
+        }
+        .status-badge.ready { background: #4caf50; }
+        .status-badge.listening { background: #2196f3; animation: pulse 1s infinite; }
+        .status-badge.thinking { background: #ff9800; animation: pulse 1s infinite; }
+        .status-badge.speaking { background: #e91e63; animation: pulse 1s infinite; }
+        .status-badge.error { background: #f44336; }
+        .status-text { font-size: 13px; color: #aaa; }
+        .call-timer { font-size: 28px; font-weight: bold; color: #00ff00; font-family: monospace; margin: 15px 0; }
+        .language-select {
+            background: #444;
+            color: white;
+            border: 1px solid #666;
+            padding: 8px 12px;
+            border-radius: 5px;
+            font-size: 13px;
+            margin-bottom: 15px;
+            cursor: pointer;
+            width: 100%;
+        }
+        .transcript-section {
+            background: rgba(0, 0, 0, 0.4);
+            border-radius: 12px;
+            padding: 12px;
+            margin: 12px 0;
+            text-align: left;
+            min-height: 50px;
+            max-height: 120px;
+            overflow-y: auto;
+            border-left: 3px solid #667eea;
+        }
+        .section-label { font-size: 11px; color: #999; text-transform: uppercase; }
+        .section-content { font-size: 13px; color: #e0e0e0; font-family: monospace; }
+        .metrics {
+            font-size: 11px;
+            color: #888;
+            margin: 10px 0;
+            padding: 10px 0;
+            border-top: 1px solid #333;
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 10px;
+        }
+        .metric { background: rgba(0, 0, 0, 0.3); padding: 6px; border-radius: 4px; }
+        .metric-label { color: #999; text-transform: uppercase; font-size: 10px; }
+        .metric-value { color: #00ff00; font-weight: bold; }
+        .controls { display: flex; gap: 12px; justify-content: center; margin-top: 15px; }
+        button {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            border: none;
+            cursor: pointer;
+            font-size: 26px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+        }
+        .btn-call { background: #4caf50; color: white; }
+        .btn-call:hover:not(:disabled) { background: #45a049; }
+        .btn-call:disabled { background: #999; opacity: 0.5; cursor: not-allowed; }
+        .btn-end { background: #f44336; color: white; }
+        .btn-end:hover:not(:disabled) { background: #da190b; }
+        .btn-end:disabled { background: #999; opacity: 0.5; cursor: not-allowed; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
+    </style>
+</head>
+<body>
+    <div class="phone">
+        <div class="screen">
+            <div class="header">
+                <div class="caller-name">AI Agent</div>
+                <div class="status-badge ready" id="statusBadge">READY</div>
+                <div class="status-text" id="statusText">Press call to start</div>
+            </div>
+            
+            <select class="language-select" id="language" disabled>
+                <option value="hi-IN">Hindi</option>
+                <option value="ta-IN">Tamil</option>
+                <option value="te-IN">Telugu</option>
+                <option value="kn-IN">Kannada</option>
+                <option value="en-IN">English</option>
+            </select>
+            
+            <div class="call-timer" id="timer" style="display: none;">00:00</div>
+            
+            <div class="transcript-section">
+                <div class="section-label">You:</div>
+                <div class="section-content" id="userTranscript">Listening...</div>
+            </div>
+            
+            <div class="transcript-section">
+                <div class="section-label">Agent:</div>
+                <div class="section-content" id="agentTranscript">Waiting...</div>
+            </div>
+            
+            <div class="metrics" id="metrics" style="display: none;">
+                <div class="metric">
+                    <div class="metric-label">STT</div>
+                    <div class="metric-value" id="sttMetric">--</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-label">BRAIN</div>
+                    <div class="metric-value" id="brainMetric">--</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-label">TIME</div>
+                    <div class="metric-value" id="uptimeMetric">--</div>
+                </div>
+            </div>
+            
+            <div class="controls">
+                <button class="btn-call" id="callBtn" onclick="toggleCall()">Call</button>
+                <button class="btn-end" id="endBtn" onclick="endCall()" disabled>End</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class VoiceCallClient {
+            constructor() {
+                this.ws = null;
+                this.audioContext = null;
+                this.outputContext = null;
+                this.scriptProcessor = null;
+                this.isCallActive = false;
+                this.callStartTime = 0;
+                this.timerInterval = null;
+                this.isAgentSpeaking = false;
+                this.audioQueue = [];
+                this.isPlayingAudio = false;
+                this.pcmBuffer = [];
+                this.pcmBufferSize = 8000;
+                this.playbackBuffer = [];
+                this.playbackBufferLimit = 48000;
+                this.playbackScheduled = false;
+                this.outputSampleRate = 48000;
+                this.micMutedUntil = 0;
+            }
+            
+            async init() {
+                console.log('Initializing Voice Call Client...');
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({
+                        audio: {
+                            sampleRate: 16000,
+                            channelCount: 1,
+                            echoCancellation: true,
+                            noiseSuppression: true,
+                            autoGainControl: true
+                        }
+                    });
+                    
+                    console.log('Microphone access granted');
+                    
+                    this.audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                        sampleRate: 16000
+                    });
+                    await this.audioContext.resume();
+                    
+                    this.scriptProcessor = this.audioContext.createScriptProcessor(4096, 1, 1);
+                    this.scriptProcessor.onaudioprocess = (event) => this.capturePCMChunk(event);
+                    
+                    const source = this.audioContext.createMediaStreamSource(stream);
+                    source.connect(this.scriptProcessor);
+
+                    const silenceGain = this.audioContext.createGain();
+                    silenceGain.gain.value = 0;
+                    this.scriptProcessor.connect(silenceGain);
+                    silenceGain.connect(this.audioContext.destination);
+                    
+                    this.outputContext = new (window.AudioContext || window.webkitAudioContext)({
+                        sampleRate: this.outputSampleRate
+                    });
+                    this.outputSampleRate = this.outputContext.sampleRate || this.outputSampleRate;
+                    await this.outputContext.resume();
+                    
+                    console.log('Audio devices initialized');
+                    this.updateUI('ready', 'Ready to call');
+                    document.getElementById('language').disabled = false;
+                } catch (error) {
+                    console.error('Audio initialization failed:', error);
+                    this.updateUI('error', 'Microphone access failed');
+                }
+            }
+            
+            capturePCMChunk(event) {
+                if (
+                    this.isAgentSpeaking
+                    || this.isPlayingAudio
+                    || this.audioQueue.length > 0
+                    || performance.now() < this.micMutedUntil
+                ) {
+                    return;
+                }
+
+                const inputData = event.inputBuffer.getChannelData(0);
+                const pcm = new Int16Array(inputData.length);
+                for (let i = 0; i < inputData.length; i++) {
+                    pcm[i] = Math.max(-1, Math.min(1, inputData[i])) * 0x7FFF;
+                }
+                
+                this.pcmBuffer.push(...pcm);
+                if (this.pcmBuffer.length >= this.pcmBufferSize) {
+                    this.sendPCMChunk(new Int16Array(this.pcmBuffer).buffer);
+                    this.pcmBuffer = [];
+                }
+            }
+
+            clearMicBuffer() {
+                this.pcmBuffer = [];
+            }
+            
+            sendPCMChunk(arrayBuffer) {
+                if (!this.isCallActive || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+                try {
+                    this.ws.send(arrayBuffer);
+                } catch (error) {
+                    console.error('Failed to send PCM audio:', error);
+                }
+            }
+            
+            async startCall() {
+                if (this.isCallActive) return;
+                
+                const language = document.getElementById('language').value;
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const wsUrl = `${protocol}//${window.location.host}/ws/v1/voice-call`;
+                
+                console.log('🟢 toggleCall: Starting call with language=' + language);
+                console.log('🟢 WebSocket URL:', wsUrl);
+                
+                try {
+                    if (this.audioContext && this.audioContext.state === 'suspended') {
+                        await this.audioContext.resume();
+                    }
+                    if (this.outputContext && this.outputContext.state === 'suspended') {
+                        await this.outputContext.resume();
+                    }
+
+                    console.log('🟢 Creating new WebSocket...');
+                    this.ws = new WebSocket(wsUrl);
+                    this.ws.binaryType = 'arraybuffer';
+                    
+                    // Set max listeners to prevent memory leak warnings
+                    if (this.ws._events) {
+                        this.ws.removeAllListeners && this.ws.removeAllListeners();
+                    }
+                    
+                    console.log('🟢 Set binaryType=arraybuffer');
+                    
+                    this.ws.onopen = () => {
+                        console.log('🟢 ✓✓✓ WebSocket CONNECTED ✓✓✓');
+                        const config = { type: 'start', language: language, speaker: 'shubh' };
+                        console.log('🟢 Sending config:', config);
+                        this.ws.send(JSON.stringify(config));
+                        console.log('🟢 Config sent');
+                        
+                        this.isCallActive = true;
+                        this.callStartTime = Date.now();
+                        this.pcmBuffer = [];
+                        this.audioQueue = [];
+                        this.isPlayingAudio = false;
+                        
+                        document.getElementById('callBtn').disabled = true;
+                        document.getElementById('endBtn').disabled = false;
+                        document.getElementById('language').disabled = true;
+                        
+                        this.updateUI('listening', 'Listening...');
+                        document.getElementById('timer').style.display = 'block';
+                        this.timerInterval = setInterval(() => this.updateTimer(), 100);
+                    };
+                    
+                    this.ws.onmessage = (event) => {
+                        const dataType = typeof event.data;
+                        const dataLen = dataType === 'string' ? event.data.length : event.data.byteLength;
+                        const preview = dataType === 'string' ? event.data.substr(0, 50) : `[binary: ${dataLen} bytes]`;
+                        console.log('🟢 Message received:', dataType, preview);
+                        if (typeof event.data === 'string') {
+                            const msg = JSON.parse(event.data);
+                            if (msg.type === 'hangup') {
+                                console.log('🔴 Server requested hangup:', msg.reason);
+                                this.scheduleGracefulHangup();
+                            } else {
+                                this.handleMessage(msg);
+                            }
+                        } else {
+                            this.handleAudioChunk(event.data);
+                        }
+                    };
+                    
+                    this.ws.onerror = (error) => {
+                        console.error('🔴 WebSocket ERROR:', error);
+                        console.error('🔴 Error details:', error.message, error.code);
+                        this.updateUI('error', 'Connection failed');
+                        this.endCall();
+                    };
+                    
+                    this.ws.onclose = (event) => {
+                        console.log('🔴 WebSocket CLOSED - Code:', event.code, 'Reason:', event.reason);
+                        if (event.code !== 1000 && this.isCallActive) {
+                            this.updateUI('error', `Connection closed: ${event.reason || 'Unknown'}`);
+                        }
+                        this.isCallActive = false;
+                        this.audioQueue = [];
+                        this.isPlayingAudio = false;
+                    };
+                } catch (error) {
+                    console.error('🔴 Call failed:', error);
+                }
+            }
+            
+            scheduleGracefulHangup() {
+                if (!this.outputContext) {
+                    this.endCall();
+                    return;
+                }
+                const remainingPlaybackSec = Math.max(0, this.nextStartTime - this.outputContext.currentTime);
+                const delayMs = (remainingPlaybackSec * 1000) + 300;
+                console.log(`⏱️ Waiting ${delayMs.toFixed(0)}ms for audio queue to finish before closing...`);
+                setTimeout(() => {
+                    this.endCall();
+                }, delayMs);
+            }
+
+            handleMessage(message) {
+                const type = message.type;
+                if (type === 'status') {
+                    this.updateUI(message.state, '');
+                    if (message.state === 'speaking') {
+                        this.isAgentSpeaking = true;
+                        this.micMutedUntil = performance.now() + 1800;
+                        this.clearMicBuffer();
+                    } else if (message.state === 'listening') {
+                        this.isAgentSpeaking = false;
+                        this.micMutedUntil = performance.now() + 600;
+                    }
+                } else if (type === 'transcript') {
+                    const role = message.role === 'assistant' ? 'agent' : 'user';
+                    const targetId = role === 'agent' ? 'agentTranscript' : 'userTranscript';
+                    document.getElementById(targetId).textContent = (message.text || 'Processing...');
+                } else if (type === 'metrics') {
+                    document.getElementById('metrics').style.display = 'grid';
+                    if (message.stt_latency_ms) {
+                        document.getElementById('sttMetric').textContent = message.stt_latency_ms.toFixed(0) + 'ms';
+                    }
+                    if (message.brain_ttft_ms) {
+                        document.getElementById('brainMetric').textContent = message.brain_ttft_ms.toFixed(0) + 'ms';
+                    }
+                }
+            }
+            
+            handleAudioChunk(arrayBuffer) {
+                const chunk = new Uint8Array(arrayBuffer);
+                this.audioQueue.push(chunk);
+                this.playQueuedAudio();
+            }
+            
+            playQueuedAudio() {
+                if (this.isPlayingAudio || this.audioQueue.length === 0) return;
+                if (!this.outputContext) return;
+
+                try {
+                    // Ensure audio context is running
+                    if (this.outputContext.state === 'suspended') {
+                        this.outputContext.resume();
+                        return; // Retry after resume
+                    }
+
+                    const pendingChunks = [];
+                    while (this.audioQueue.length > 0 && pendingChunks.length < 8) {
+                        pendingChunks.push(this.audioQueue.shift());
+                    }
+
+                    const combined = this.concatChunks(pendingChunks);
+                    if (combined.length < 4) {
+                        this.isPlayingAudio = false;
+                        return;
+                    }
+
+                    const pcmSamples = this.bytesToInt16Array(combined);
+                    const sampleRate = this.outputContext.sampleRate || this.outputSampleRate;
+                    const floatSamples = this.resampleAudio(pcmSamples, 22050, sampleRate);
+
+                    if (floatSamples.length === 0) {
+                        this.isPlayingAudio = false;
+                        this.playQueuedAudio();
+                        return;
+                    }
+
+                    this.isPlayingAudio = true;
+                    const audioBuffer = this.outputContext.createBuffer(1, floatSamples.length, sampleRate);
+                    const channelData = audioBuffer.getChannelData(0);
+                    channelData.set(floatSamples);
+
+                    const source = this.outputContext.createBufferSource();
+                    source.buffer = audioBuffer;
+                    
+                    // Use once() equivalent to avoid memory leaks
+                    const cleanup = () => {
+                        try {
+                            source.disconnect();
+                        } catch (e) {}
+                        this.isPlayingAudio = false;
+                        this.playQueuedAudio();
+                    };
+                    
+                    source.onended = cleanup;
+                    source.onerror = cleanup;
+
+                    source.connect(this.outputContext.destination);
+                    source.start(this.outputContext.currentTime);
+                    console.log('▶️  Playing audio chunk:', floatSamples.length, 'samples @', sampleRate + 'Hz');
+                } catch (error) {
+                    console.error('❌ Audio playback error:', error);
+                    this.isPlayingAudio = false;
+                    this.playQueuedAudio();
+                }
+            }
+
+            concatChunks(chunks) {
+                const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+                const merged = new Uint8Array(totalLength);
+                let offset = 0;
+                for (const chunk of chunks) {
+                    merged.set(chunk, offset);
+                    offset += chunk.length;
+                }
+                return merged;
+            }
+
+            bytesToInt16Array(bytes) {
+                const samples = new Int16Array(bytes.length / 2);
+                for (let i = 0; i < bytes.length; i += 2) {
+                    samples[i / 2] = (bytes[i + 1] << 8) | bytes[i];
+                }
+                return samples;
+            }
+
+            resampleAudio(samples, fromRate, toRate) {
+                if (!samples || samples.length === 0) return new Float32Array(0);
+                if (fromRate === toRate) {
+                    const result = new Float32Array(samples.length);
+                    for (let i = 0; i < samples.length; i++) {
+                        result[i] = Math.max(-1, Math.min(1, samples[i] / 32768));
+                    }
+                    return result;
+                }
+
+                const result = new Float32Array(Math.max(1, Math.round(samples.length * toRate / fromRate)));
+                for (let i = 0; i < result.length; i++) {
+                    const sourceIndex = i * fromRate / toRate;
+                    const left = Math.floor(sourceIndex);
+                    const right = Math.min(left + 1, samples.length - 1);
+                    const fraction = sourceIndex - left;
+                    const leftValue = samples[left] / 32768;
+                    const rightValue = samples[right] / 32768;
+                    result[i] = leftValue + (rightValue - leftValue) * fraction;
+                }
+                return result;
+            }
+            
+            endCall() {
+                console.log('Ending call');
+                this.isCallActive = false;
+                this.isPlayingAudio = false;
+                this.isAgentSpeaking = false;
+                this.micMutedUntil = 0;
+                this.audioQueue = [];
+                this.pcmBuffer = [];
+                
+                if (this.timerInterval) {
+                    clearInterval(this.timerInterval);
+                    this.timerInterval = null;
+                }
+                
+                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                    try {
+                        this.ws.close(1000, 'Call ended');
+                    } catch (e) {}
+                }
+                this.ws = null;
+                
+                document.getElementById('callBtn').disabled = false;
+                document.getElementById('endBtn').disabled = true;
+                document.getElementById('language').disabled = false;
+                document.getElementById('timer').style.display = 'none';
+                document.getElementById('timer').textContent = '00:00';
+                
+                this.updateUI('ready', 'Call ended');
+            }
+            
+            updateTimer() {
+                if (!this.isCallActive) return;
+                const elapsed = Math.floor((Date.now() - this.callStartTime) / 1000);
+                const mins = Math.floor(elapsed / 60);
+                const secs = elapsed % 60;
+                document.getElementById('timer').textContent = 
+                    `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+                document.getElementById('uptimeMetric').textContent = elapsed + 's';
+            }
+            
+            updateUI(state, statusText) {
+                const badge = document.getElementById('statusBadge');
+                const text = document.getElementById('statusText');
+                badge.className = 'status-badge ' + state;
+                badge.textContent = state.toUpperCase();
+                if (statusText) text.textContent = statusText;
+            }
+        }
+        
+        let client;
+        
+        async function toggleCall() {
+            console.log('toggleCall called, isCallActive=', client.isCallActive);
+            if (client.isCallActive) {
+                client.endCall();
+            } else {
+                await client.startCall();
+            }
+        }
+        
+        function endCall() {
+            console.log('endCall called');
+            client.endCall();
+        }
+
+        window.toggleCall = toggleCall;
+        window.endCall = endCall;
+        
+        window.addEventListener('load', async () => {
+            console.log('Voice Call Client Loading...');
+            client = new VoiceCallClient();
+            await client.init();
+        });
+    </script>
+</body>
+</html>

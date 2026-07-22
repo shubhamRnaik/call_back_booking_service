@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyc
+__pycache__/
+*.py[cod]
+
+# Virtual environment
+.venv/
+venv/
+
+
+# Environment variables
+.env
+*.env
+
+# Test outputs
+test_outputs/
+database/cache/
+indic_tts_runtime/database/cache/
+
+# Logs
+*.log
+
+# Pytest
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

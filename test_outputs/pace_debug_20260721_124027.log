@@ -1,0 +1,245 @@
+2026-07-21 12:40:27,831 [INFO] __main__: ================================================================================
+2026-07-21 12:40:27,832 [INFO] __main__: PACE PARAMETER DEBUG TEST - FULL LOGGING
+2026-07-21 12:40:27,832 [INFO] __main__: ================================================================================
+2026-07-21 12:40:27,989 [INFO] __main__:   API Key: sk_4ug4yr7p_0x1Cqkoq...puvd6zt0gI
+2026-07-21 12:40:27,990 [INFO] __main__:   Audio Codec: linear16
+2026-07-21 12:40:27,991 [INFO] __main__:   Sample Rate: 8000
+2026-07-21 12:40:27,991 [INFO] __main__: 
+2026-07-21 12:40:27,992 [INFO] __main__: ================================================================================
+2026-07-21 12:40:27,992 [INFO] __main__: TEST CASE 1: Pace=0.5x, Speaker=shubh, Language=hi-IN
+2026-07-21 12:40:27,993 [INFO] __main__: ================================================================================
+2026-07-21 12:40:28,209 [INFO] __main__:   target_language_code=hi-IN
+2026-07-21 12:40:28,209 [INFO] __main__:   speaker=shubh
+2026-07-21 12:40:28,209 [INFO] __main__:   pace=0.5
+2026-07-21 12:40:28,209 [INFO] __main__:   output_audio_codec=linear16
+2026-07-21 12:40:28,209 [INFO] __main__:   min_buffer_size=50
+2026-07-21 12:40:28,210 [INFO] __main__:   max_chunk_length=200
+2026-07-21 12:40:28,211 [INFO] indic_tts_runtime.services.sarvam_service: Connecting to Sarvam AI (using sarvamai library)... (session 1)
+2026-07-21 12:40:29,890 [DEBUG] websockets.client: = connection is CONNECTING
+2026-07-21 12:40:30,054 [DEBUG] websockets.client: > GET /text-to-speech/ws?model=bulbul%3Av3 HTTP/1.1
+2026-07-21 12:40:30,055 [DEBUG] websockets.client: > Host: api.sarvam.ai
+2026-07-21 12:40:30,055 [DEBUG] websockets.client: > Upgrade: websocket
+2026-07-21 12:40:30,055 [DEBUG] websockets.client: > Connection: Upgrade
+2026-07-21 12:40:30,056 [DEBUG] websockets.client: > Sec-WebSocket-Key: vK630Br5cNxAjQfLGZOAeA==
+2026-07-21 12:40:30,056 [DEBUG] websockets.client: > Sec-WebSocket-Version: 13
+2026-07-21 12:40:30,056 [DEBUG] websockets.client: > Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits
+2026-07-21 12:40:30,057 [DEBUG] websockets.client: > User-Agent: sarvamai/0.1.28
+2026-07-21 12:40:30,057 [DEBUG] websockets.client: > X-Fern-Language: Python
+2026-07-21 12:40:30,057 [DEBUG] websockets.client: > X-Fern-Runtime: python/3.13.0
+2026-07-21 12:40:30,058 [DEBUG] websockets.client: > X-Fern-Platform: windows/11
+2026-07-21 12:40:30,058 [DEBUG] websockets.client: > X-Fern-SDK-Name: sarvamai
+2026-07-21 12:40:30,058 [DEBUG] websockets.client: > X-Fern-SDK-Version: 0.1.28
+2026-07-21 12:40:30,058 [DEBUG] websockets.client: > api-subscription-key: sk_4ug4yr7p_0x1CqkoqUMqDKNpuvd6zt0gI
+2026-07-21 12:40:30,268 [DEBUG] websockets.client: < HTTP/1.1 101 Switching Protocols
+2026-07-21 12:40:30,269 [DEBUG] websockets.client: < Date: Tue, 21 Jul 2026 07:10:30 GMT
+2026-07-21 12:40:30,269 [DEBUG] websockets.client: < Connection: upgrade
+2026-07-21 12:40:30,269 [DEBUG] websockets.client: < Upgrade: websocket
+2026-07-21 12:40:30,269 [DEBUG] websockets.client: < Sec-WebSocket-Accept: e/A1o6PAeDeB6Y82EWj41jFRJD0=
+2026-07-21 12:40:30,270 [DEBUG] websockets.client: < Sec-WebSocket-Extensions: permessage-deflate
+2026-07-21 12:40:30,270 [DEBUG] websockets.client: < server: uvicorn
+2026-07-21 12:40:30,271 [DEBUG] websockets.client: < Access-Control-Allow-Origin: *
+2026-07-21 12:40:30,271 [DEBUG] websockets.client: < Strict-Transport-Security: max-age=31536000; includeSubDomains
+2026-07-21 12:40:30,271 [DEBUG] websockets.client: < X-Frame-Options: DENY
+2026-07-21 12:40:30,272 [DEBUG] websockets.client: < X-Content-Type-Options: nosniff
+2026-07-21 12:40:30,272 [DEBUG] websockets.client: < Referrer-Policy: strict-origin-when-cross-origin
+2026-07-21 12:40:30,272 [DEBUG] websockets.client: < Permissions-Policy: geolocation=(), camera=(), microphone=(), payment=()
+2026-07-21 12:40:30,273 [DEBUG] websockets.client: < Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+2026-07-21 12:40:30,273 [DEBUG] websockets.client: < Cache-Control: no-store, no-cache, must-revalidate
+2026-07-21 12:40:30,273 [DEBUG] websockets.client: < Pragma: no-cache
+2026-07-21 12:40:30,276 [DEBUG] websockets.client: < Expires: 0
+2026-07-21 12:40:30,276 [DEBUG] websockets.client: < X-XSS-Protection: 0
+2026-07-21 12:40:30,277 [DEBUG] websockets.client: = connection is OPEN
+2026-07-21 12:40:30,278 [DEBUG] indic_tts_runtime.services.sarvam_service: Sarvam config: {'target_language_code': 'hi-IN', 'speaker': 'shubh', 'pace': 0.5, 'output_audio_codec': 'linear16', 'min_buffer_size': 50, 'max_chunk_length': 200}
+2026-07-21 12:40:30,280 [DEBUG] websockets.client: > TEXT '{"type": "config", "data": {"target_language_co... 200, "dict_id": null}}' [316 bytes]
+2026-07-21 12:40:30,290 [INFO] indic_tts_runtime.services.sarvam_service:   Language: hi-IN, Speaker: shubh, Pace: 0.5x, Codec: linear16
+2026-07-21 12:40:30,298 [INFO] __main__:   Connection state: True
+2026-07-21 12:40:30,299 [INFO] __main__:   Connection object type: <class 'sarvamai.text_to_speech_streaming.socket_client.AsyncTextToSpeechStreamingSocketClient'>
+2026-07-21 12:40:30,306 [INFO] __main__:   Text length: 21 characters
+2026-07-21 12:40:30,307 [DEBUG] websockets.client: > TEXT '{"type": "text", "data": {"text": "\\u0928\\u09...\u092a\\u0915\\u094b"}}' [149 bytes]
+2026-07-21 12:40:30,317 [DEBUG] websockets.client: > TEXT '{"type": "flush"}' [17 bytes]
+2026-07-21 12:40:30,317 [INFO] indic_tts_runtime.services.sarvam_service: Flush sent to Sarvam
+2026-07-21 12:40:30,683 [DEBUG] websockets.client: < TEXT '{"type":"audio","data":{"request_id":"20260721_...AAAAAAAAAAAAAAAAAAAA"}}' [17244 bytes]
+2026-07-21 12:40:30,737 [DEBUG] __main__:   Chunk 1: 12840 bytes (arrived after 409.53ms)
+2026-07-21 12:40:30,739 [DEBUG] websockets.client: < TEXT '{"type":"audio","data":{"request_id":"20260721_...AAAAAAAAAAAAAAAAAA=="}}' [8692 bytes]
+2026-07-21 12:40:30,741 [DEBUG] __main__:   Chunk 2: 6424 bytes (arrived after 3.48ms)
+2026-07-21 12:40:30,758 [DEBUG] websockets.client: < TEXT '{"type":"audio","data":{"request_id":"20260721_...AAAAAAAAAAAAAAAAAAAA"}}' [12972 bytes]
+2026-07-21 12:40:30,762 [DEBUG] __main__:   Chunk 3: 9636 bytes (arrived after 19.57ms)
+2026-07-21 12:40:30,802 [DEBUG] websockets.client: < TEXT '{"type":"audio","data":{"request_id":"20260721_...AAAAAAAAAAAAAAABAA=="}}' [8692 bytes]
+2026-07-21 12:40:30,804 [DEBUG] __main__:   Chunk 4: 6424 bytes (arrived after 41.36ms)
+2026-07-21 12:40:30,840 [DEBUG] websockets.client: < TEXT '{"type":"audio","data":{"request_id":"20260721_...8kzzuvMG9GD0oPTm9A=="}}' [8692 bytes]
+2026-07-21 12:40:30,843 [DEBUG] __main__:   Chunk 5: 6424 bytes (arrived after 38.95ms)
+2026-07-21 12:40:30,874 [DEBUG] websockets.client: < TEXT '{"type":"audio","data":{"request_id":"20260721_...GIoW7hMQEQoOawthCXQH"}}' [12972 bytes]
+2026-07-21 12:40:30,877 [DEBUG] __main__:   Chunk 6: 9636 bytes (arrived after 32.79ms)
+2026-07-21 12:40:30,909 [DEBUG] websockets.client: < TEXT '{"type":"audio","data":{"request_id":"20260721_...8/9GCbcJJ/9UBdsCwQY="}}' [8688 bytes]
+2026-07-21 12:40:30,912 [DEBUG] __main__:   Chunk 7: 6422 bytes (arrived after 34.94ms)
+2026-07-21 12:40:30,949 [DEBUG] websockets.client: < TEXT '{"type":"audio","data":{"request_id":"20260721_...DW8QAhKpEl4STxGtEOkP"}}' [12972 bytes]
+2026-07-21 12:40:30,951 [DEBUG] __main__:   Chunk 8: 9636 bytes (arrived after 37.85ms)
+2026-07-21 12:40:30,987 [DEBUG] websockets.client: < TEXT '{"type":"audio","data":{"request_id":"20260721_...AhAD3fsf/Gr+lQFt/w=="}}' [8692 bytes]
+2026-07-21 12:40:30,989 [DEBUG] __main__:   Chunk 9: 6424 bytes (arrived after 37.87ms)
+2026-07-21 12:40:31,025 [DEBUG] websockets.client: < TEXT '{"type":"audio","data":{"request_id":"20260721_.../n7/2wCAAs8C3wC3AA=="}}' [8692 bytes]
+2026-07-21 12:40:31,027 [DEBUG] __main__:   Chunk 10: 6424 bytes (arrived after 37.67ms)
+2026-07-21 12:40:31,060 [DEBUG] websockets.client: < TEXT '{"type":"audio","data":{"request_id":"20260721_...9sf1+fV99jH35vem+Gb5"}}' [12972 bytes]
+2026-07-21 12:40:31,062 [DEBUG] __main__:   Chunk 11: 9636 bytes (arrived after 34.68ms)
+2026-07-21 12:40:31,102 [DEBUG] websockets.client: < TEXT '{"type":"audio","data":{"request_id":"20260721_...QIA4jTB2KvkkQCBAGg=="}}' [8692 bytes]
+2026-07-21 12:40:31,104 [DEBUG] __main__:   Chunk 12: 6424 bytes (arrived after 41.51ms)
+2026-07-21 12:40:31,154 [DEBUG] websockets.client: < TEXT '{"type":"audio","data":{"request_id":"20260721_...//z+FAA6AN7/p/8H/w=="}}' [8692 bytes]
+2026-07-21 12:40:31,156 [DEBUG] __main__:   Chunk 13: 6424 bytes (arrived after 51.26ms)
+2026-07-21 12:40:31,185 [DEBUG] websockets.client: < TEXT '{"type":"audio","data":{"request_id":"20260721_...Bm0G1gUXBSUE+QK0AYYA"}}' [12972 bytes]
+2026-07-21 12:40:31,187 [DEBUG] __main__:   Chunk 14: 9636 bytes (arrived after 30.72ms)
+2026-07-21 12:40:31,225 [DEBUG] websockets.client: < TEXT '{"type":"audio","data":{"request_id":"20260721_...//L/9P/z//L/7//t/w=="}}' [8692 bytes]
+2026-07-21 12:40:31,227 [DEBUG] __main__:   Chunk 15: 6424 bytes (arrived after 39.62ms)
+2026-07-21 12:40:31,259 [DEBUG] websockets.client: < TEXT '{"type":"audio","data":{"request_id":"20260721_...//r//f/9//3//////w=="}}' [8692 bytes]
+2026-07-21 12:40:31,261 [DEBUG] __main__:   Chunk 16: 6424 bytes (arrived after 34.05ms)
+2026-07-21 12:40:31,275 [DEBUG] websockets.client: < TEXT '{"type":"audio","data":{"request_id":"20260721_...BVMFXAVzBYwFrAW/BdcF"}}' [12972 bytes]
+2026-07-21 12:40:31,276 [DEBUG] __main__:   Chunk 17: 9636 bytes (arrived after 14.72ms)
+2026-07-21 12:40:31,281 [DEBUG] websockets.client: < TEXT '{"type":"audio","data":{"request_id":"20260721_...AAAAAAAAAAAAAAAAAAA="}}' [31632 bytes]
+2026-07-21 12:40:31,283 [DEBUG] __main__:   Chunk 18: 23630 bytes (arrived after 5.72ms)
+2026-07-21 12:40:50,267 [DEBUG] websockets.client: < PING d3 71 8e 2b [binary, 4 bytes]
+2026-07-21 12:40:50,268 [DEBUG] websockets.client: > PONG d3 71 8e 2b [binary, 4 bytes]
+2026-07-21 12:40:50,336 [DEBUG] websockets.client: % sending keepalive ping
+2026-07-21 12:40:50,338 [DEBUG] websockets.client: > PING a7 75 a1 4d [binary, 4 bytes]
+2026-07-21 12:40:50,409 [DEBUG] websockets.client: < PONG a7 75 a1 4d [binary, 4 bytes]
+2026-07-21 12:40:50,410 [DEBUG] websockets.client: % received keepalive pong
+2026-07-21 12:41:10,336 [DEBUG] websockets.client: < PING e4 3e a4 37 [binary, 4 bytes]
+2026-07-21 12:41:10,337 [DEBUG] websockets.client: > PONG e4 3e a4 37 [binary, 4 bytes]
+2026-07-21 12:41:10,416 [DEBUG] websockets.client: % sending keepalive ping
+2026-07-21 12:41:10,420 [DEBUG] websockets.client: > PING ef 2e 22 3f [binary, 4 bytes]
+2026-07-21 12:41:10,512 [DEBUG] websockets.client: < PONG ef 2e 22 3f [binary, 4 bytes]
+2026-07-21 12:41:10,513 [DEBUG] websockets.client: % received keepalive pong
+2026-07-21 12:41:30,418 [DEBUG] websockets.client: < PING 83 e3 ea 4d [binary, 4 bytes]
+2026-07-21 12:41:30,421 [DEBUG] websockets.client: > PONG 83 e3 ea 4d [binary, 4 bytes]
+2026-07-21 12:41:30,477 [DEBUG] websockets.client: < TEXT '{"type":"error","data":{"request_id":"20260721_...too long.","code":408}}' [168 bytes]
+2026-07-21 12:41:30,488 [DEBUG] websockets.client: < CLOSE 1000 (OK) [2 bytes]
+2026-07-21 12:41:30,489 [DEBUG] websockets.client: = connection is CLOSING
+2026-07-21 12:41:30,491 [DEBUG] websockets.client: > CLOSE 1000 (OK) [2 bytes]
+2026-07-21 12:41:30,597 [DEBUG] websockets.client: = connection is CLOSED
+2026-07-21 12:41:30,602 [INFO] __main__:   Total chunks: 18
+2026-07-21 12:41:30,602 [INFO] __main__:   Total bytes: 158524
+2026-07-21 12:41:30,603 [INFO] __main__:   First chunk TTFB: 409.53ms
+2026-07-21 12:41:30,603 [INFO] __main__:   Avg chunk interval: 52.57ms
+2026-07-21 12:41:30,603 [INFO] __main__:   Audio duration: 9.91s
+2026-07-21 12:41:30,604 [INFO] __main__:   Audio size: 154.8 KB
+2026-07-21 12:41:30,608 [INFO] indic_tts_runtime.services.sarvam_service: Disconnected from Sarvam
+2026-07-21 12:41:31,625 [INFO] __main__: 
+2026-07-21 12:41:31,625 [INFO] __main__: ================================================================================
+2026-07-21 12:41:31,626 [INFO] __main__: TEST CASE 2: Pace=2.0x, Speaker=shubh, Language=hi-IN
+2026-07-21 12:41:31,626 [INFO] __main__: ================================================================================
+2026-07-21 12:41:31,632 [INFO] __main__:   target_language_code=hi-IN
+2026-07-21 12:41:31,632 [INFO] __main__:   speaker=shubh
+2026-07-21 12:41:31,633 [INFO] __main__:   pace=2.0
+2026-07-21 12:41:31,633 [INFO] __main__:   output_audio_codec=linear16
+2026-07-21 12:41:31,634 [INFO] __main__:   min_buffer_size=50
+2026-07-21 12:41:31,634 [INFO] __main__:   max_chunk_length=200
+2026-07-21 12:41:31,634 [INFO] indic_tts_runtime.services.sarvam_service: Connecting to Sarvam AI (using sarvamai library)... (session 1)
+2026-07-21 12:41:32,260 [DEBUG] websockets.client: = connection is CONNECTING
+2026-07-21 12:41:32,405 [DEBUG] websockets.client: > GET /text-to-speech/ws?model=bulbul%3Av3 HTTP/1.1
+2026-07-21 12:41:32,406 [DEBUG] websockets.client: > Host: api.sarvam.ai
+2026-07-21 12:41:32,406 [DEBUG] websockets.client: > Upgrade: websocket
+2026-07-21 12:41:32,406 [DEBUG] websockets.client: > Connection: Upgrade
+2026-07-21 12:41:32,408 [DEBUG] websockets.client: > Sec-WebSocket-Key: Gi00eiBInyo2SDC0jWdIAA==
+2026-07-21 12:41:32,408 [DEBUG] websockets.client: > Sec-WebSocket-Version: 13
+2026-07-21 12:41:32,409 [DEBUG] websockets.client: > Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits
+2026-07-21 12:41:32,409 [DEBUG] websockets.client: > User-Agent: sarvamai/0.1.28
+2026-07-21 12:41:32,409 [DEBUG] websockets.client: > X-Fern-Language: Python
+2026-07-21 12:41:32,409 [DEBUG] websockets.client: > X-Fern-Runtime: python/3.13.0
+2026-07-21 12:41:32,410 [DEBUG] websockets.client: > X-Fern-Platform: windows/11
+2026-07-21 12:41:32,410 [DEBUG] websockets.client: > X-Fern-SDK-Name: sarvamai
+2026-07-21 12:41:32,411 [DEBUG] websockets.client: > X-Fern-SDK-Version: 0.1.28
+2026-07-21 12:41:32,411 [DEBUG] websockets.client: > api-subscription-key: sk_4ug4yr7p_0x1CqkoqUMqDKNpuvd6zt0gI
+2026-07-21 12:41:32,569 [DEBUG] websockets.client: < HTTP/1.1 101 Switching Protocols
+2026-07-21 12:41:32,569 [DEBUG] websockets.client: < Date: Tue, 21 Jul 2026 07:11:32 GMT
+2026-07-21 12:41:32,570 [DEBUG] websockets.client: < Connection: upgrade
+2026-07-21 12:41:32,570 [DEBUG] websockets.client: < Upgrade: websocket
+2026-07-21 12:41:32,570 [DEBUG] websockets.client: < Sec-WebSocket-Accept: pdwaa5YgsEkHLfef5gyXp1GpxbA=
+2026-07-21 12:41:32,570 [DEBUG] websockets.client: < Sec-WebSocket-Extensions: permessage-deflate
+2026-07-21 12:41:32,571 [DEBUG] websockets.client: < server: uvicorn
+2026-07-21 12:41:32,571 [DEBUG] websockets.client: < Access-Control-Allow-Origin: *
+2026-07-21 12:41:32,571 [DEBUG] websockets.client: < Strict-Transport-Security: max-age=31536000; includeSubDomains
+2026-07-21 12:41:32,572 [DEBUG] websockets.client: < X-Frame-Options: DENY
+2026-07-21 12:41:32,572 [DEBUG] websockets.client: < X-Content-Type-Options: nosniff
+2026-07-21 12:41:32,572 [DEBUG] websockets.client: < Referrer-Policy: strict-origin-when-cross-origin
+2026-07-21 12:41:32,573 [DEBUG] websockets.client: < Permissions-Policy: geolocation=(), camera=(), microphone=(), payment=()
+2026-07-21 12:41:32,573 [DEBUG] websockets.client: < Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+2026-07-21 12:41:32,573 [DEBUG] websockets.client: < Cache-Control: no-store, no-cache, must-revalidate
+2026-07-21 12:41:32,573 [DEBUG] websockets.client: < Pragma: no-cache
+2026-07-21 12:41:32,574 [DEBUG] websockets.client: < Expires: 0
+2026-07-21 12:41:32,574 [DEBUG] websockets.client: < X-XSS-Protection: 0
+2026-07-21 12:41:32,574 [DEBUG] websockets.client: = connection is OPEN
+2026-07-21 12:41:32,574 [DEBUG] indic_tts_runtime.services.sarvam_service: Sarvam config: {'target_language_code': 'hi-IN', 'speaker': 'shubh', 'pace': 2.0, 'output_audio_codec': 'linear16', 'min_buffer_size': 50, 'max_chunk_length': 200}
+2026-07-21 12:41:32,575 [DEBUG] websockets.client: > TEXT '{"type": "config", "data": {"target_language_co... 200, "dict_id": null}}' [316 bytes]
+2026-07-21 12:41:32,579 [INFO] indic_tts_runtime.services.sarvam_service:   Language: hi-IN, Speaker: shubh, Pace: 2.0x, Codec: linear16
+2026-07-21 12:41:32,582 [INFO] __main__:   Connection state: True
+2026-07-21 12:41:32,582 [INFO] __main__:   Connection object type: <class 'sarvamai.text_to_speech_streaming.socket_client.AsyncTextToSpeechStreamingSocketClient'>
+2026-07-21 12:41:32,584 [INFO] __main__:   Text length: 21 characters
+2026-07-21 12:41:32,585 [DEBUG] websockets.client: > TEXT '{"type": "text", "data": {"text": "\\u0928\\u09...\u092a\\u0915\\u094b"}}' [149 bytes]
+2026-07-21 12:41:32,589 [DEBUG] websockets.client: > TEXT '{"type": "flush"}' [17 bytes]
+2026-07-21 12:41:32,589 [INFO] indic_tts_runtime.services.sarvam_service: Flush sent to Sarvam
+2026-07-21 12:41:33,111 [DEBUG] websockets.client: < TEXT '{"type":"audio","data":{"request_id":"20260721_...ABwAGgAXABcAFgAWABUA"}}' [4396 bytes]
+2026-07-21 12:41:33,116 [DEBUG] __main__:   Chunk 1: 3204 bytes (arrived after 522.52ms)
+2026-07-21 12:41:33,124 [DEBUG] websockets.client: < TEXT '{"type":"audio","data":{"request_id":"20260721_...YQIMBNQFRAfuCH8KAQw="}}' [4408 bytes]
+2026-07-21 12:41:33,126 [DEBUG] __main__:   Chunk 2: 3212 bytes (arrived after 3.26ms)
+2026-07-21 12:41:33,128 [DEBUG] websockets.client: < TEXT '{"type":"audio","data":{"request_id":"20260721_...OwDUANn9WAS8/XkDNP4="}}' [4408 bytes]
+2026-07-21 12:41:33,129 [DEBUG] __main__:   Chunk 3: 3212 bytes (arrived after 2.34ms)
+2026-07-21 12:41:33,166 [DEBUG] websockets.client: < TEXT '{"type":"audio","data":{"request_id":"20260721_...RwLMAvUCggLYAF/+B/s="}}' [4408 bytes]
+2026-07-21 12:41:33,168 [DEBUG] __main__:   Chunk 4: 3212 bytes (arrived after 36.98ms)
+2026-07-21 12:41:33,242 [DEBUG] websockets.client: < TEXT '{"type":"audio","data":{"request_id":"20260721_...dwGc/OT/k/4lB9f/avs="}}' [4408 bytes]
+2026-07-21 12:41:33,244 [DEBUG] __main__:   Chunk 5: 3212 bytes (arrived after 75.81ms)
+2026-07-21 12:41:33,323 [DEBUG] websockets.client: < TEXT '{"type":"audio","data":{"request_id":"20260721_...z/gP+nr6qPuz/Gr+zgA="}}' [4408 bytes]
+2026-07-21 12:41:33,326 [DEBUG] __main__:   Chunk 6: 3212 bytes (arrived after 81.60ms)
+2026-07-21 12:41:33,401 [DEBUG] websockets.client: < TEXT '{"type":"audio","data":{"request_id":"20260721_.../f67/sb+qP6H/lj+Pv4="}}' [4408 bytes]
+2026-07-21 12:41:33,404 [DEBUG] __main__:   Chunk 7: 3212 bytes (arrived after 76.99ms)
+2026-07-21 12:41:33,444 [DEBUG] websockets.client: < TEXT '{"type":"audio","data":{"request_id":"20260721_...7vIQ9NP1AfcM+C756vs="}}' [4408 bytes]
+2026-07-21 12:41:33,446 [DEBUG] __main__:   Chunk 8: 3212 bytes (arrived after 41.47ms)
+2026-07-21 12:41:33,519 [DEBUG] websockets.client: < TEXT '{"type":"audio","data":{"request_id":"20260721_...AgAAAAAAAAD//////f8="}}' [4408 bytes]
+2026-07-21 12:41:33,520 [DEBUG] __main__:   Chunk 9: 3212 bytes (arrived after 74.32ms)
+2026-07-21 12:41:33,590 [DEBUG] websockets.client: < TEXT '{"type":"audio","data":{"request_id":"20260721_...OAcVB/QG0ga8BpgGYAY="}}' [4408 bytes]
+2026-07-21 12:41:33,591 [DEBUG] __main__:   Chunk 10: 3212 bytes (arrived after 70.67ms)
+2026-07-21 12:41:33,599 [DEBUG] websockets.client: < TEXT '{"type":"audio","data":{"request_id":"20260721_...AAAAAAAA/////wAA//8="}}' [4408 bytes]
+2026-07-21 12:41:33,602 [DEBUG] __main__:   Chunk 11: 3212 bytes (arrived after 10.21ms)
+2026-07-21 12:41:33,605 [DEBUG] websockets.client: < TEXT '{"type":"audio","data":{"request_id":"20260721_...AAAAAAAAAAAAAAAAAAAA"}}' [1948 bytes]
+2026-07-21 12:41:33,606 [DEBUG] __main__:   Chunk 12: 1368 bytes (arrived after 3.59ms)
+2026-07-21 12:41:52,621 [DEBUG] websockets.client: % sending keepalive ping
+2026-07-21 12:41:52,622 [DEBUG] websockets.client: > PING c1 eb f5 eb [binary, 4 bytes]
+2026-07-21 12:41:52,631 [DEBUG] websockets.client: < PING e5 36 f1 d0 [binary, 4 bytes]
+2026-07-21 12:41:52,632 [DEBUG] websockets.client: > PONG e5 36 f1 d0 [binary, 4 bytes]
+2026-07-21 12:41:52,687 [DEBUG] websockets.client: < PONG c1 eb f5 eb [binary, 4 bytes]
+2026-07-21 12:41:52,688 [DEBUG] websockets.client: % received keepalive pong
+2026-07-21 12:42:12,690 [DEBUG] websockets.client: % sending keepalive ping
+2026-07-21 12:42:12,690 [DEBUG] websockets.client: > PING 67 f0 eb 38 [binary, 4 bytes]
+2026-07-21 12:42:12,746 [DEBUG] websockets.client: < PING 6b 14 ef 59 [binary, 4 bytes]
+2026-07-21 12:42:12,746 [DEBUG] websockets.client: > PONG 6b 14 ef 59 [binary, 4 bytes]
+2026-07-21 12:42:12,755 [DEBUG] websockets.client: < PONG 67 f0 eb 38 [binary, 4 bytes]
+2026-07-21 12:42:12,756 [DEBUG] websockets.client: % received keepalive pong
+2026-07-21 12:42:32,758 [DEBUG] websockets.client: % sending keepalive ping
+2026-07-21 12:42:32,758 [DEBUG] websockets.client: > PING 88 0d b2 79 [binary, 4 bytes]
+2026-07-21 12:42:32,792 [DEBUG] websockets.client: < TEXT '{"type":"error","data":{"request_id":"20260721_...too long.","code":408}}' [168 bytes]
+2026-07-21 12:42:32,794 [DEBUG] websockets.client: < CLOSE 1000 (OK) [2 bytes]
+2026-07-21 12:42:32,795 [DEBUG] websockets.client: = connection is CLOSING
+2026-07-21 12:42:32,796 [DEBUG] websockets.client: > CLOSE 1000 (OK) [2 bytes]
+2026-07-21 12:42:32,899 [DEBUG] websockets.client: = connection is CLOSED
+2026-07-21 12:42:32,902 [INFO] __main__:   Total chunks: 12
+2026-07-21 12:42:32,903 [INFO] __main__:   Total bytes: 36692
+2026-07-21 12:42:32,903 [INFO] __main__:   First chunk TTFB: 522.52ms
+2026-07-21 12:42:32,903 [INFO] __main__:   Avg chunk interval: 83.31ms
+2026-07-21 12:42:32,903 [INFO] __main__:   Audio duration: 2.29s
+2026-07-21 12:42:32,903 [INFO] __main__:   Audio size: 35.8 KB
+2026-07-21 12:42:32,906 [INFO] indic_tts_runtime.services.sarvam_service: Disconnected from Sarvam
+2026-07-21 12:42:33,921 [INFO] __main__: 
+2026-07-21 12:42:33,921 [INFO] __main__: ================================================================================
+2026-07-21 12:42:33,922 [INFO] __main__: FINAL ANALYSIS
+2026-07-21 12:42:33,922 [INFO] __main__: ================================================================================
+2026-07-21 12:42:33,922 [INFO] __main__: Pace 0.5x: 9.91s duration, 18 chunks, 158524 bytes
+2026-07-21 12:42:33,923 [INFO] __main__: Pace 2.0x: 2.29s duration, 12 chunks, 36692 bytes
+2026-07-21 12:42:33,923 [INFO] __main__: 
+2026-07-21 12:42:33,923 [INFO] __main__: Duration ratio (0.5x / 2.0x): 4.32x
+2026-07-21 12:42:33,923 [INFO] __main__: Chunk ratio (0.5x / 2.0x): 1.50x
+2026-07-21 12:42:33,924 [INFO] __main__: Byte ratio (0.5x / 2.0x): 4.32x
+2026-07-21 12:42:33,924 [INFO] __main__: 
+2026-07-21 12:42:33,927 [INFO] __main__:    - 0.5x produces 4.3x longer audio than 2.0x
+2026-07-21 12:42:33,927 [INFO] __main__:    - This is expected behavior
+2026-07-21 12:42:33,927 [INFO] __main__:    - Voice perceived as 'robotic' is likely Sarvam's natural voice character
+2026-07-21 12:42:33,928 [INFO] __main__: 
+2026-07-21 12:42:33,928 [INFO] __main__: ================================================================================
+2026-07-21 12:42:33,929 [INFO] __main__: LOG FILE SAVED: test_outputs\pace_debug_20260721_124027.log
+2026-07-21 12:42:33,929 [INFO] __main__: ================================================================================
+2026-07-21 12:42:33,930 [INFO] __main__: 

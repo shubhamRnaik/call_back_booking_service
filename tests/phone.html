@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎤 Voice Call - Indic AI</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        
+        .phone {
+            background: #1a1a2e;
+            border-radius: 40px;
+            padding: 20px;
+            width: 100%;
+            max-width: 400px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+            border: 12px solid #0f3460;
+        }
+        
+        .screen {
+            background: linear-gradient(135deg, #0f3460 0%, #16213e 100%);
+            border-radius: 30px;
+            padding: 30px 20px;
+            text-align: center;
+            color: white;
+            min-height: 500px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+        
+        .header {
+            margin-bottom: 30px;
+        }
+        
+        .caller-name {
+            font-size: 24px;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+        
+        .status {
+            font-size: 14px;
+            color: #aaa;
+            letter-spacing: 1px;
+        }
+        
+        .call-timer {
+            font-size: 32px;
+            font-weight: bold;
+            color: #00ff00;
+            font-family: monospace;
+            margin: 20px 0;
+        }
+        
+        .transcript-area {
+            background: rgba(0, 0, 0, 0.5);
+            border-radius: 15px;
+            padding: 20px;
+            margin: 20px 0;
+            min-height: 100px;
+            text-align: left;
+            font-size: 14px;
+            color: #00ff00;
+            font-family: monospace;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        
+        .label {
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        .content {
+            font-size: 14px;
+            color: #fff;
+            min-height: 40px;
+        }
+        
+        .controls {
+            display: flex;
+            gap: 15px;
+            margin-top: 30px;
+            justify-content: center;
+        }
+        
+        button {
+            width: 70px;
+            height: 70px;
+            border-radius: 50%;
+            border: none;
+            cursor: pointer;
+            font-size: 30px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s ease;
+            font-weight: bold;
+        }
+        
+        .btn-call {
+            background: #00ff00;
+            color: black;
+        }
+        
+        .btn-call:hover:not(:disabled) {
+            background: #00dd00;
+            transform: scale(1.1);
+        }
+        
+        .btn-call:disabled {
+            background: #999;
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
+        
+        .btn-end {
+            background: #ff3333;
+            color: white;
+        }
+        
+        .btn-end:hover:not(:disabled) {
+            background: #ff0000;
+            transform: scale(1.1);
+        }
+        
+        .btn-end:disabled {
+            background: #999;
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
+        
+        .btn-mute {
+            background: #444;
+            color: white;
+            font-size: 24px;
+        }
+        
+        .btn-mute:hover {
+            background: #555;
+        }
+        
+        .language-select {
+            background: #444;
+            color: white;
+            border: 1px solid #666;
+            padding: 8px 15px;
+            border-radius: 5px;
+            font-size: 12px;
+            margin-bottom: 20px;
+            cursor: pointer;
+        }
+        
+        .speaker-select {
+            background: #444;
+            color: white;
+            border: 1px solid #666;
+            padding: 8px 15px;
+            border-radius: 5px;
+            font-size: 12px;
+            margin-bottom: 20px;
+            cursor: pointer;
+            margin-left: 10px;
+        }
+        
+        .error {
+            background: #ff3333;
+            color: white;
+            padding: 15px;
+            border-radius: 10px;
+            margin: 10px 0;
+            display: none;
+        }
+        
+        .error.show {
+            display: block;
+        }
+        
+        .spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #666;
+            border-top-color: #00ff00;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .metrics {
+            font-size: 11px;
+            color: #888;
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #444;
+        }
+        
+        .metric-item {
+            display: inline-block;
+            margin-right: 15px;
+        }
+    </style>
+</head>
+<body>
+    <div class="phone">
+        <div class="screen">
+            <div class="header">
+                <div class="caller-name">🤖 Indic AI</div>
+                <div class="status" id="status">Ready to call</div>
+            </div>
+            
+            <select class="language-select" id="language">
+                <option value="hi-IN">🇮🇳 Hindi (हिंदी)</option>
+                <option value="ta-IN">🇮🇳 Tamil (தமிழ்)</option>
+                <option value="te-IN">🇮🇳 Telugu (తెలుగు)</option>
+                <option value="kn-IN">🇮🇳 Kannada (ಕನ್ನಡ)</option>
+                <option value="mr-IN">🇮🇳 Marathi (मराठी)</option>
+                <option value="ml-IN">🇮🇳 Malayalam (മലയാളം)</option>
+            </select>
+            
+            <select class="speaker-select" id="speaker">
+                <option value="meera">👩 Female (Meera)</option>
+                <option value="shubh">👨 Male (Shubh)</option>
+            </select>
+            
+            <div class="error" id="error"></div>
+            
+            <div class="call-timer" id="timer" style="display: none;">00:00</div>
+            
+            <div class="transcript-area">
+                <div class="label">You said:</div>
+                <div class="content" id="userTranscript">Waiting for your voice...</div>
+            </div>
+            
+            <div class="transcript-area">
+                <div class="label">Agent says:</div>
+                <div class="content" id="agentResponse">Listening...</div>
+            </div>
+            
+            <div class="metrics" id="metrics">
+                <div class="metric-item">STT: <span id="sttTime">—</span></div>
+                <div class="metric-item">Brain: <span id="brainTime">—</span></div>
+                <div class="metric-item">E2E: <span id="e2eTime">—</span></div>
+            </div>
+            
+            <div class="controls">
+                <button class="btn-call" id="callBtn" onclick="startCall()">📞</button>
+                <button class="btn-end" id="endBtn" onclick="endCall()" disabled>📵</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let isCallActive = false;
+        let mediaRecorder;
+        let audioChunks = [];
+        let callStartTime = 0;
+        let timerInterval;
+        
+        // Initialize audio on page load
+        async function initAudio() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        sampleRate: 16000,
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    }
+                });
+                
+                mediaRecorder = new MediaRecorder(stream);
+                mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
+                mediaRecorder.onstop = processAudio;
+                
+                console.log('✓ Microphone initialized');
+            } catch (err) {
+                showError('Microphone access denied: ' + err.message);
+            }
+        }
+        
+        function startCall() {
+            if (isCallActive) return;
+            
+            isCallActive = true;
+            audioChunks = [];
+            callStartTime = Date.now();
+            
+            document.getElementById('callBtn').disabled = true;
+            document.getElementById('endBtn').disabled = false;
+            document.getElementById('status').textContent = '📞 Call in progress...';
+            document.getElementById('userTranscript').innerHTML = '<span class="spinner"></span> Recording...';
+            document.getElementById('timer').style.display = 'block';
+            
+            // Start timer
+            timerInterval = setInterval(() => {
+                const elapsed = Math.floor((Date.now() - callStartTime) / 1000);
+                const mins = Math.floor(elapsed / 60);
+                const secs = elapsed % 60;
+                document.getElementById('timer').textContent = 
+                    `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+            }, 1000);
+            
+            // Start recording
+            mediaRecorder.start();
+        }
+        
+        function endCall() {
+            if (!isCallActive) return;
+            
+            isCallActive = false;
+            mediaRecorder.stop();
+            clearInterval(timerInterval);
+            
+            document.getElementById('callBtn').disabled = false;
+            document.getElementById('endBtn').disabled = true;
+            document.getElementById('status').textContent = '📞 Call ended';
+            document.getElementById('timer').style.display = 'none';
+        }
+        
+        async function processAudio() {
+            try {
+                const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                
+                document.getElementById('userTranscript').innerHTML = '<span class="spinner"></span> Processing...';
+                document.getElementById('agentResponse').innerHTML = '<span class="spinner"></span> Thinking...';
+                
+                const language = document.getElementById('language').value;
+                const formData = new FormData();
+                formData.append('audio', audioBlob, 'recording.webm');
+                formData.append('language_code', language);
+                
+                const response = await fetch('/api/voice/process', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (!response.ok) {
+                    const error = await response.json().catch(() => ({}));
+                    throw new Error(error.detail || 'Processing failed');
+                }
+                
+                const data = await response.json();
+                
+                // Update UI
+                document.getElementById('userTranscript').textContent = data.transcript || 'No speech detected';
+                document.getElementById('agentResponse').textContent = data.response || 'No response';
+                
+                // Update metrics
+                if (data.metrics) {
+                    document.getElementById('sttTime').textContent = 
+                        data.metrics.stt_latency_ms.toFixed(0) + 'ms';
+                    document.getElementById('brainTime').textContent = 
+                        data.metrics.brain_ttft_ms.toFixed(0) + 'ms';
+                    document.getElementById('e2eTime').textContent = 
+                        data.metrics.e2e_ttfb_ms.toFixed(0) + 'ms';
+                }
+                
+                // Play audio if available
+                if (data.audio_base64) {
+                    playAudio(data.audio_base64);
+                }
+                
+            } catch (error) {
+                showError('Error: ' + error.message);
+                document.getElementById('userTranscript').textContent = 'Error occurred';
+                document.getElementById('agentResponse').textContent = 'Error occurred';
+            }
+        }
+        
+        function playAudio(base64Data) {
+            try {
+                const binaryString = atob(base64Data);
+                const bytes = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) {
+                    bytes[i] = binaryString.charCodeAt(i);
+                }
+                
+                const audioBlob = new Blob([bytes], { type: 'audio/wav' });
+                const audioUrl = URL.createObjectURL(audioBlob);
+                const audio = new Audio(audioUrl);
+                audio.play().catch(err => console.log('Audio play error:', err));
+            } catch (err) {
+                console.log('Audio playback error:', err);
+            }
+        }
+        
+        function showError(message) {
+            const errorEl = document.getElementById('error');
+            errorEl.textContent = message;
+            errorEl.classList.add('show');
+            setTimeout(() => errorEl.classList.remove('show'), 5000);
+        }
+        
+        // Initialize
+        window.addEventListener('load', initAudio);
+    </script>
+</body>
+</html>
