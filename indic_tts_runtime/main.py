@@ -1471,8 +1471,8 @@ async def websocket_exotel_stream(
     tenant_id: str = "default",
 ):
     """
-    Exotel Cloud Telephony WebSocket endpoint for multi-tenant voice streaming.
-    Includes half-duplex echo protection, event deduplication, and 40ms frame pacing.
+    Exotel Cloud Telephony WebSocket endpoint with 80ms chunk pacing,
+    strict single-greeting execution, and echo protection.
     """
     connection_id = str(uuid.uuid4())[:13]
     client_ip = _client_ip_from_websocket(websocket)
@@ -1505,7 +1505,7 @@ async def websocket_exotel_stream(
         logger.error(f"[EX-{connection_id}] ❌ Accept failed: {e}")
         return
 
-    # Tenant-specific prompt & configuration mapping
+    # Tenant configuration
     tenant_configs = {
         "PARLOUR_001": {
             "business_name": "Glow & Shine Beauty Parlour",
@@ -1557,12 +1557,14 @@ async def websocket_exotel_stream(
     brain = None
     call_start_time = time.perf_counter()
     is_speaking = False
-    speaking_hold_until = 0.0  # Echo guard timer
+    speaking_hold_until = 0.0
     pending_brain_task = None
     greeting_task = None
+    greeting_sent = False  # Prevents double greeting execution
 
     current_utterance_id = 0
     last_processed_transcript = ""
+    last_processed_at = 0.0
 
     async def send_exotel_clear():
         """Send Exotel clear frame to purge buffered audio on the phone line."""
@@ -1581,8 +1583,8 @@ async def websocket_exotel_stream(
 
     async def send_exotel_media_paced(pcm_24k_bytes: bytes, utterance_id: int):
         """
-        Convert TTS PCM to 8kHz mu-law and stream to Exotel in 40ms (320 byte) frames
-        with smooth pacing to eliminate audio jitter and distortion.
+        Optimized Pacing: Streams mu-law audio to Exotel in 80ms chunks (640 bytes)
+        with smooth delay. Eliminates audio blur, jitter, and buffer overruns.
         """
         nonlocal stream_sid, codec, is_speaking
         if not stream_sid or not pcm_24k_bytes:
@@ -1599,14 +1601,14 @@ async def websocket_exotel_stream(
                 return
 
             raw_mulaw_bytes = base64.b64decode(b64_payload)
-            frame_size = 320  # 40ms frame at 8000Hz 8-bit mu-law
+            chunk_size = 640  # 80ms frame at 8000Hz 8-bit mu-law
 
-            for i in range(0, len(raw_mulaw_bytes), frame_size):
+            for i in range(0, len(raw_mulaw_bytes), chunk_size):
                 if not is_speaking or utterance_id != current_utterance_id:
-                    logger.info(f"[EX-{connection_id}] 🛑 Audio pacing stopped (interrupted)")
+                    logger.info(f"[EX-{connection_id}] 🛑 Audio stream interrupted")
                     break
 
-                chunk = raw_mulaw_bytes[i:i + frame_size]
+                chunk = raw_mulaw_bytes[i:i + chunk_size]
                 b64_chunk = base64.b64encode(chunk).decode("utf-8")
 
                 media_event = {
@@ -1617,26 +1619,27 @@ async def websocket_exotel_stream(
                     },
                 }
                 await websocket.send_json(media_event)
-                # 40ms pacing sleep (35ms sleep + WebSocket transmission time ≈ 40ms)
-                await asyncio.sleep(0.035)
+                # 80ms pacing delay (70ms sleep + socket latency ≈ 80ms)
+                await asyncio.sleep(0.070)
 
         except Exception as e:
             logger.warning(f"[EX-{connection_id}] Failed to send Exotel media frame: {e}")
 
     async def process_transcript_to_response(transcript: str):
         """Full-duplex Exotel pipeline: LLM streaming + parallel TTS."""
-        nonlocal is_speaking, speaking_hold_until, current_utterance_id, stream_sid, last_processed_transcript
+        nonlocal is_speaking, speaking_hold_until, current_utterance_id, stream_sid, last_processed_transcript, last_processed_at
 
         clean_transcript = transcript.strip()
         if not clean_transcript or len(clean_transcript.replace(" ", "")) < 2:
             return
 
-        # Deduplicate identical transcripts received within the same turn
-        if clean_transcript == last_processed_transcript:
-            logger.info(f"[EX-{connection_id}] ⏭️ Skipping duplicate transcript: '{clean_transcript}'")
+        now_monotonic = time.perf_counter()
+        if clean_transcript == last_processed_transcript and (now_monotonic - last_processed_at) <= 2.5:
+            logger.info(f"[EX-{connection_id}] ⏭️ Skipping duplicate transcript within 2.5s window: '{clean_transcript}'")
             return
 
         last_processed_transcript = clean_transcript
+        last_processed_at = now_monotonic
         current_utterance_id += 1
         this_utterance_id = current_utterance_id
 
@@ -1741,7 +1744,6 @@ async def websocket_exotel_stream(
                 pass
 
             is_speaking = False
-            # Hold echo guard for 600ms after speaking finishes so residual audio isn't heard as user input
             speaking_hold_until = time.perf_counter() + 0.6
 
     async def stream_greeting_audio(greeting_text: str):
@@ -1786,18 +1788,44 @@ async def websocket_exotel_stream(
         """Listen to STT transcripts and trigger brain processing cleanly."""
         nonlocal pending_brain_task
 
+        accumulated_text = ""
+        silence_timer = None
+
+        async def fallback_after_silence():
+            nonlocal accumulated_text
+            await asyncio.sleep(5.0)
+            if accumulated_text:
+                final_fallback = accumulated_text.strip()
+                accumulated_text = ""
+                logger.info(f"[EX-{connection_id}] ⏱️ Silence fallback triggered with transcript: '{final_fallback}'")
+                nonlocal pending_brain_task
+                if pending_brain_task and not pending_brain_task.done():
+                    pending_brain_task.cancel()
+                    try:
+                        await pending_brain_task
+                    except asyncio.CancelledError:
+                        pass
+                pending_brain_task = asyncio.create_task(
+                    process_transcript_to_response(final_fallback)
+                )
+
         try:
-            current_transcript = ""
             async for event in stt_client.stream_transcripts():
-                if event.event_type == "transcript_updated":
-                    current_transcript = getattr(event, "transcript", "")
-                elif event.event_type in ("final_transcript", "speech_ended"):
-                    transcript_text = getattr(event, "transcript", "").strip() or current_transcript.strip()
-                    current_transcript = ""
+                if event.event_type in ("final_transcript", "transcript_updated"):
+                    transcript_text = getattr(event, "transcript", "").strip()
+                    
+                    if event.event_type == "transcript_updated" and transcript_text:
+                        accumulated_text = transcript_text
+                        if silence_timer and not silence_timer.done():
+                            silence_timer.cancel()
+                        silence_timer = asyncio.create_task(fallback_after_silence())
 
-                    if transcript_text:
+                    elif event.event_type == "final_transcript" and transcript_text:
+                        if silence_timer and not silence_timer.done():
+                            silence_timer.cancel()
+                        accumulated_text = ""
                         logger.info(f"[EX-{connection_id}] 🎤 STT FINAL TRANSCRIPT: '{transcript_text}'")
-
+                        
                         if pending_brain_task and not pending_brain_task.done():
                             pending_brain_task.cancel()
                             try:
@@ -1816,6 +1844,9 @@ async def websocket_exotel_stream(
             logger.debug(f"[EX-{connection_id}] STT listener cancelled")
         except Exception as e:
             logger.error(f"[EX-{connection_id}] STT listener error: {e}", exc_info=True)
+        finally:
+            if silence_timer and not silence_timer.done():
+                silence_timer.cancel()
 
     # Initialize STT and Brain
     stt_client = SarvamSaarasSTTClient()
@@ -1850,7 +1881,8 @@ async def websocket_exotel_stream(
                     msg = json.loads(data["text"])
                     event_type = msg.get("event") or msg.get("type")
 
-                    if event_type in ("connected", "start"):
+                    # Trigger greeting ONLY when 'start' event arrives with valid stream_sid
+                    if event_type == "start" and not greeting_sent:
                         start_data = msg.get("start", {})
                         call_id = msg.get("call_id") or start_data.get("call_id") or msg.get("stream_sid")
                         stream_sid = msg.get("stream_sid") or start_data.get("stream_sid") or call_id
@@ -1858,15 +1890,17 @@ async def websocket_exotel_stream(
                         codec = media_format.get("encoding", "mulaw")
                         sample_rate = int(media_format.get("sample_rate", 8000))
 
-                        logger.info(
-                            f"[EX-{connection_id}] 🏁 Call started: call_id={call_id}, "
-                            f"stream_sid={stream_sid}, codec={codec}, sample_rate={sample_rate}"
-                        )
+                        if stream_sid:
+                            greeting_sent = True
+                            logger.info(
+                                f"[EX-{connection_id}] 🏁 Call started: call_id={call_id}, "
+                                f"stream_sid={stream_sid}, codec={codec}, sample_rate={sample_rate}"
+                            )
 
-                        greeting_text = (
-                            f"नमस्ते! {business_name} में कॉल करने के लिए धन्यवाद। मैं आपकी क्या मदद कर सकता हूँ?"
-                        )
-                        greeting_task = asyncio.create_task(stream_greeting_audio(greeting_text))
+                            greeting_text = (
+                                f"नमस्ते! {business_name} में कॉल करने के लिए धन्यवाद। मैं आपकी क्या मदद कर सकता हूँ?"
+                            )
+                            greeting_task = asyncio.create_task(stream_greeting_audio(greeting_text))
 
                     elif event_type == "media":
                         media_data = msg.get("media", {})
