@@ -11,6 +11,7 @@ import asyncio
 import os
 import random
 import base64
+import re
 from datetime import datetime
 from typing import Optional, Callable, Awaitable, Any
 from contextlib import asynccontextmanager
@@ -133,12 +134,11 @@ def _compute_percentile(values: deque, percentile: float) -> float:
 
 
 def _with_language_lock(user_text: str, language_code: str) -> str:
-    """Inject a strict per-turn language instruction for voice-call stability."""
+    """Inject a strict per-turn language instruction without causing LLM tag prefixes."""
     lang = (language_code or "hi-IN").strip()
     instruction = (
-        "Reply in one language only for this turn. "
-        f"Use exactly this language code style: {lang}. "
-        "Do not switch language mid-response."
+        f"Reply strictly in {lang} language only. "
+        "Do NOT prefix your response with language codes, tags, or prefixes. Speak naturally."
     )
     return f"{instruction}\n\nUser: {user_text}"
 
@@ -932,6 +932,8 @@ async def websocket_voice_call(websocket: WebSocket):
             # Check for end of call tag
             should_hangup = "[END_CALL]" in raw_response_text
             clean_response_text = raw_response_text.replace("[END_CALL]", "").strip()
+            # Strip a leading "xx-XX:" language-code prefix the model sometimes adds
+            clean_response_text = re.sub(r'^[a-zA-Z]{2}-[A-Z]{2}:\s*', '', clean_response_text).strip()
 
             if not clean_response_text or this_utterance_id != current_utterance_id:
                 await send_status("listening")
@@ -1153,13 +1155,6 @@ async def websocket_voice_call(websocket: WebSocket):
                     if current_transcript.strip() and len(current_transcript.replace(" ", "")) >= 3:
                         logger.info(f"[VC-{connection_id}] 🎤→🧠 Queueing transcript for brain processing (length={len(current_transcript)})")
 
-                        if pending_fallback_task and not pending_fallback_task.done():
-                            pending_fallback_task.cancel()
-                            try:
-                                await pending_fallback_task
-                            except asyncio.CancelledError:
-                                pass
-                        
                         # Cancel previous brain task if running
                         if pending_brain_task and not pending_brain_task.done():
                             logger.debug(f"[VC-{connection_id}] Cancelling previous brain task")
@@ -1670,6 +1665,8 @@ async def websocket_exotel_stream(
             raw_response_text = "".join(response_tokens).strip()
             should_hangup = "[END_CALL]" in raw_response_text
             clean_response = raw_response_text.replace("[END_CALL]", "").strip()
+            # Strip a leading "xx-XX:" language-code prefix the model sometimes adds
+            clean_response = re.sub(r'^[a-zA-Z]{2}-[A-Z]{2}:\s*', '', clean_response).strip()
 
             if not clean_response or this_utterance_id != current_utterance_id:
                 return
@@ -1758,8 +1755,48 @@ async def websocket_exotel_stream(
             speaking_hold_until = time.perf_counter() + 0.5
 
     async def stream_stt_transcripts():
-        """Process STT transcripts from caller with 5s silence timeout."""
+        """Process STT transcripts from caller with debounced buffering and 5s silence timeout."""
         nonlocal pending_brain_task, pending_fallback_task
+
+        _pending_transcript_parts = []
+        _debounce_task = None
+        DEBOUNCE_SECONDS = 1.0
+
+        async def _debounced_process():
+            nonlocal _pending_transcript_parts, pending_brain_task, pending_fallback_task
+            await asyncio.sleep(DEBOUNCE_SECONDS)
+            if _pending_transcript_parts:
+                full_text = " ".join(_pending_transcript_parts).strip()
+                _pending_transcript_parts = []
+
+                logger.info(f"[EX-{connection_id}] 🧠 Debounced transcript ready: '{full_text}'")
+
+                # Cancel pending silence fallback timer
+                if pending_fallback_task and not pending_fallback_task.done():
+                    pending_fallback_task.cancel()
+
+                # Cancel pending brain task if running
+                if pending_brain_task and not pending_brain_task.done():
+                    pending_brain_task.cancel()
+                    try:
+                        await pending_brain_task
+                    except asyncio.CancelledError:
+                        pass
+
+                pending_brain_task = asyncio.create_task(
+                    process_transcript_to_response(full_text)
+                )
+
+                # Schedule 5-second silence check after debounced turn processing
+                async def silence_fallback():
+                    await asyncio.sleep(5.0)
+                    if not is_speaking:
+                        logger.info(f"[EX-{connection_id}] ⏱️ 5.0s silence detected. Re-engaging caller...")
+                        await process_transcript_to_response(
+                            "Kya aap wahan hain? Kya aapko koi aur madad chahiye?"
+                        )
+
+                pending_fallback_task = asyncio.create_task(silence_fallback())
 
         try:
             async for event in stt_client.stream_transcripts():
@@ -1771,34 +1808,13 @@ async def websocket_exotel_stream(
                         continue
 
                     if event.event_type == "final_transcript" and transcript_text:
-                        logger.info(f"[EX-{connection_id}] 🎤 STT TRANSCRIPT: '{transcript_text}'")
+                        logger.info(f"[EX-{connection_id}] 🎤 STT TRANSCRIPT PART: '{transcript_text}'")
 
-                        # Cancel pending silence fallback timer
-                        if pending_fallback_task and not pending_fallback_task.done():
-                            pending_fallback_task.cancel()
+                        _pending_transcript_parts.append(transcript_text)
 
-                        # Cancel pending brain task if running
-                        if pending_brain_task and not pending_brain_task.done():
-                            pending_brain_task.cancel()
-                            try:
-                                await pending_brain_task
-                            except asyncio.CancelledError:
-                                pass
-
-                        pending_brain_task = asyncio.create_task(
-                            process_transcript_to_response(transcript_text)
-                        )
-
-                        # FIX B2: Schedule 5-second silence check
-                        async def silence_fallback():
-                            await asyncio.sleep(5.0)
-                            if not is_speaking:
-                                logger.info(f"[EX-{connection_id}] ⏱️ 5.0s silence detected. Re-engaging caller...")
-                                await process_transcript_to_response(
-                                    "Kya aap wahan hain? Kya aapko koi aur madad chahiye?"
-                                )
-
-                        pending_fallback_task = asyncio.create_task(silence_fallback())
+                        if _debounce_task and not _debounce_task.done():
+                            _debounce_task.cancel()
+                        _debounce_task = asyncio.create_task(_debounced_process())
 
                 elif event.event_type == "error":
                     logger.error(f"[EX-{connection_id}] 🎤 STT error: {event.error_message}")
