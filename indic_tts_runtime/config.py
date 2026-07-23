@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     # Server Configuration
     server_host: str = Field(default="0.0.0.0", env="SERVER_HOST")
     server_port: int = Field(default=8000, env="SERVER_PORT")
-    log_level: str = Field(default="INFO", env="LOG_LEVEL")
+    log_level: str = Field(default="DEBUG", env="LOG_LEVEL")
 
     # Performance Targets
     target_ttfb_ms: float = Field(default=220.0, env="TARGET_TTFB_MS")

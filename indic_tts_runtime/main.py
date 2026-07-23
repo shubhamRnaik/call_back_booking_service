@@ -1850,7 +1850,7 @@ async def websocket_exotel_stream(
 
                     elif event_type == "media":
                         media_data = msg.get("media", {})
-                        base64_payload = media_data.get("payload", "")
+                        base64_payload = media_data.get("payload", "") or media_data.get("chunk", "")
 
                         pcm_16k = telephony_to_stt_pcm(
                             base64_payload=base64_payload,
@@ -1858,8 +1858,13 @@ async def websocket_exotel_stream(
                             source_sr=8000,
                             target_sr=16000,
                         )
+                        logger.info(
+                            f"[EX-{connection_id}] 🎙️ media frame: raw_b64_len={len(base64_payload)}, pcm_16k_bytes={len(pcm_16k) if pcm_16k else 0}"
+                        )
                         if pcm_16k:
-                            await stt_client.send_audio_chunk(pcm_16k)
+                            sent = await stt_client.send_audio_chunk(pcm_16k)
+                            if not sent:
+                                logger.warning(f"[EX-{connection_id}] ❌ Failed to send audio to STT")
 
                     elif event_type in ("stop", "closed"):
                         break
