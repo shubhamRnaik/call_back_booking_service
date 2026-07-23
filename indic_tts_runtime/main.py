@@ -1505,7 +1505,7 @@ async def websocket_exotel_stream(
 
     # Tenant configuration
     tenant_configs = {
-        "PARLOUR_001": {
+        "default": {
             "business_name": "Glow & Shine Beauty Parlour",
             "language": "en-IN",
             "speaker": "shubh",
@@ -1535,7 +1535,7 @@ async def websocket_exotel_stream(
                 "- When the booking is complete or the caller says goodbye/thank you, give a warm closing remark and ALWAYS append '[END_CALL]' at the very end of your response."
             ),
         },
-        "default": {
+        "PARLOUR_001": {
             "business_name": settings.service_name,
             "language": "hi-IN",
             "speaker": "shubh",
