@@ -87,23 +87,25 @@ class SarvamSaarasSTTClient:
 
         logger.info(f"Sarvam STT client initialized with endpoint: {self.WS_ENDPOINT}")
 
-    async def connect(self) -> bool:
+    async def connect(self, language_code: str = "hi-IN") -> bool:
         """
         Establish WebSocket connection to Sarvam STT service.
+
+        Args:
+            language_code: Target BCP-47 language code (default: "hi-IN")
 
         Returns:
             True if connected successfully, False otherwise
         """
         try:
-            # **TASK 4**: Add aggressive VAD timeout params for faster silence detection
             url = (
                 f"{self.WS_ENDPOINT}?"
                 f"model={self.MODEL}&"
                 f"mode={self.MODE}&"
+                f"language_code={language_code}&"
                 f"sample_rate={self.SAMPLE_RATE}&"
                 f"vad_signals={'true' if self.VAD_ENABLED else 'false'}&"
-                f"vad_silence_timeout_ms=400&"
-                f"vad_signal_processing_timeout_ms=400"
+                f"high_vad_sensitivity=true"
             )
 
             logger.info(f"Connecting to Sarvam STT: {url}")
@@ -279,18 +281,46 @@ class SarvamSaarasSTTClient:
 
             logger.debug(f"STT raw payload: {message}")
 
-            # Check for VAD events
-            if message.get("speech_started"):
+            msg_type = message.get("type")
+            data = message.get("data", {}) or {}
+
+            # 1. Parse VAD Events
+            if msg_type == "events":
+                signal = data.get("signal_type")
+                if signal == "START_SPEECH":
+                    logger.info("🎙️ Sarvam STT: Speech started signal detected")
+                    return STTEvent(event_type="speech_started")
+                if signal == "END_SPEECH":
+                    logger.info("🎙️ Sarvam STT: Speech ended signal detected")
+                    return STTEvent(event_type="speech_ended")
+                return None
+
+            # 2. Parse Transcripts from event structure
+            if msg_type == "data":
+                transcript = data.get("transcript")
+                if transcript and transcript.strip():
+                    logger.info(f"🎙️ Sarvam STT parsed transcript: '{transcript.strip()}'")
+                    return STTEvent(
+                        event_type="final_transcript",
+                        transcript=transcript.strip(),
+                        language_code=data.get("language_code") or data.get("language"),
+                        confidence=data.get("confidence", 0.0),
+                    )
+                return None
+
+            # 3. Check direct legacy/fallback VAD keys
+            if message.get("speech_started") or message.get("signal_type") == "START_SPEECH":
                 return STTEvent(event_type="speech_started")
 
-            if message.get("speech_ended"):
+            if message.get("speech_ended") or message.get("signal_type") == "END_SPEECH":
                 return STTEvent(event_type="speech_ended")
 
-            # Try multiple transcript key formats
+            # 4. Fallback transcript extraction
             transcript = self._extract_text_from_payload(message, keys=["transcript", "text", "message", "result"])
             if transcript:
                 language = message.get("language") or message.get("lang") or "hi-IN"
                 confidence = message.get("confidence", 0.0)
+                logger.info(f"🎙️ Sarvam STT parsed transcript (fallback): '{transcript.strip()}'")
                 return STTEvent(
                     event_type="final_transcript",
                     transcript=transcript.strip(),

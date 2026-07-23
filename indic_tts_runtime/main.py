@@ -1812,13 +1812,19 @@ async def websocket_exotel_stream(
     stt_client = SarvamSaarasSTTClient()
     brain = StreamingBrain(system_prompt=custom_system_prompt)
 
-    stt_connected = await _retry_async(stt_client.connect, "stt_connect_exotel")
+    stt_connected = await _retry_async(
+        lambda: stt_client.connect(language_code=language_code),
+        "stt_connect_exotel",
+    )
     if not stt_connected:
         logger.error(f"[EX-{connection_id}] ❌ STT Connection Failed")
         await websocket.close(code=4001, reason="STT Connection Failed")
         return
 
     stt_task = asyncio.create_task(stream_stt_transcripts())
+
+    stt_audio_buffer = bytearray()
+    STT_BUFFER_THRESHOLD = 3200  # 3200 bytes @ 16kHz 16-bit PCM = 100ms audio
 
     try:
         while True:
@@ -1858,13 +1864,19 @@ async def websocket_exotel_stream(
                             source_sr=8000,
                             target_sr=16000,
                         )
-                        logger.info(
-                            f"[EX-{connection_id}] 🎙️ media frame: raw_b64_len={len(base64_payload)}, pcm_16k_bytes={len(pcm_16k) if pcm_16k else 0}"
-                        )
                         if pcm_16k:
-                            sent = await stt_client.send_audio_chunk(pcm_16k)
-                            if not sent:
-                                logger.warning(f"[EX-{connection_id}] ❌ Failed to send audio to STT")
+                            stt_audio_buffer.extend(pcm_16k)
+                            # Send to Sarvam STT only when buffer reaches 100ms (3200 bytes)
+                            if len(stt_audio_buffer) >= STT_BUFFER_THRESHOLD:
+                                chunk_to_send = bytes(stt_audio_buffer)
+                                stt_audio_buffer.clear()
+                                sent = await stt_client.send_audio_chunk(chunk_to_send)
+                                if sent:
+                                    logger.debug(
+                                        f"[EX-{connection_id}] 🎙️ Sent 100ms buffered audio ({len(chunk_to_send)}B) to STT"
+                                    )
+                                else:
+                                    logger.warning(f"[EX-{connection_id}] ❌ Failed to send buffered audio to STT")
 
                     elif event_type in ("stop", "closed"):
                         break
