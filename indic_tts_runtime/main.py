@@ -1811,6 +1811,10 @@ async def websocket_exotel_stream(
 
         try:
             async for event in stt_client.stream_transcripts():
+                # Ignore transcripts detected while agent is speaking or during echo hold
+                if is_speaking or time.perf_counter() < speaking_hold_until:
+                    continue
+
                 if event.event_type in ("final_transcript", "transcript_updated"):
                     transcript_text = getattr(event, "transcript", "").strip()
                     
@@ -1906,11 +1910,8 @@ async def websocket_exotel_stream(
                         media_data = msg.get("media", {})
                         base64_payload = media_data.get("payload", "")
 
-                        # HALF-DUPLEX GUARD: Drop inbound microphone frames while agent is speaking 
-                        # or within 600ms of finishing to prevent self-interruption loops.
-                        if is_speaking or time.perf_counter() < speaking_hold_until:
-                            continue
-
+                        # Continuous STT audio feed: always process and send PCM chunk to keep STT WebSocket alive.
+                        # (Echo suppression and transcript filtering are handled inside stream_stt_transcripts)
                         pcm_16k = telephony_to_stt_pcm(
                             base64_payload=base64_payload,
                             source_codec=codec,
