@@ -1577,9 +1577,12 @@ async def websocket_exotel_stream(
         except Exception as e:
             logger.warning(f"[EX-{connection_id}] Failed to send Exotel clear frame: {e}")
 
-    async def send_exotel_media(pcm_24k_bytes: bytes):
-        """Convert TTS 24kHz/22.05kHz PCM to 8kHz mu-law and stream Exotel media payload."""
-        nonlocal stream_sid, codec
+    async def send_exotel_media(pcm_24k_bytes: bytes, utterance_id: int):
+        """
+        Convert TTS PCM to 8kHz mu-law and stream to Exotel in 20ms (160 byte) frames
+        with packet pacing to eliminate audio distortion and stuttering.
+        """
+        nonlocal stream_sid, codec, is_speaking
         if not stream_sid or not pcm_24k_bytes:
             return
         try:
@@ -1589,15 +1592,30 @@ async def websocket_exotel_stream(
                 target_codec=codec,
                 target_sr=sample_rate,
             )
-            if base64_payload:
+            if not base64_payload:
+                return
+
+            raw_mulaw_bytes = base64.b64decode(base64_payload)
+            frame_size = 160  # 20ms frame = 160 bytes at 8000Hz 8-bit mu-law
+
+            for i in range(0, len(raw_mulaw_bytes), frame_size):
+                if not is_speaking or utterance_id != current_utterance_id:
+                    break
+
+                chunk = raw_mulaw_bytes[i:i + frame_size]
+                b64_chunk = base64.b64encode(chunk).decode("utf-8")
+
                 media_event = {
                     "event": "media",
                     "stream_sid": stream_sid,
                     "media": {
-                        "payload": base64_payload,
+                        "payload": b64_chunk,
                     },
                 }
                 await websocket.send_json(media_event)
+                # 20ms pacing delay (18ms sleep + WS latency ≈ 20ms frame delivery)
+                await asyncio.sleep(0.018)
+
         except Exception as e:
             logger.warning(f"[EX-{connection_id}] Failed to send Exotel media frame: {e}")
 
@@ -1684,7 +1702,7 @@ async def websocket_exotel_stream(
 
                     audio_chunks_sent += 1
                     total_bytes_sent += len(audio_chunk)
-                    await send_exotel_media(audio_chunk)
+                    await send_exotel_media(audio_chunk, this_utterance_id)
 
                 logger.info(f"[EX-{connection_id}] 🔊 Audio streaming complete ({audio_chunks_sent} chunks, {total_bytes_sent} bytes)")
 
@@ -1742,7 +1760,7 @@ async def websocket_exotel_stream(
                     async for chunk in turn_tts.stream_audio_chunks(
                         idle_timeout_sec=2.0, max_duration_sec=10.0
                     ):
-                        await send_exotel_media(chunk)
+                        await send_exotel_media(chunk, current_utterance_id)
                     logger.info(f"[EX-{connection_id}] ✓ Greeting audio sent to Exotel")
         except Exception as e:
             logger.error(f"[EX-{connection_id}] ❌ Greeting synthesis failed: {e}")
@@ -1755,7 +1773,7 @@ async def websocket_exotel_stream(
 
     async def stream_stt_transcripts():
         """Listen to STT transcripts and trigger brain processing."""
-        nonlocal pending_brain_task
+        nonlocal pending_brain_task, is_speaking, current_utterance_id
 
         try:
             current_transcript = ""
@@ -1763,11 +1781,23 @@ async def websocket_exotel_stream(
                 if event.event_type == "speech_started":
                     logger.info(f"[EX-{connection_id}] 🎤 STT: Speech started")
                     current_transcript = ""
+                    # Handle barge-in if caller starts speaking while agent is outputting audio
+                    if is_speaking:
+                        logger.info(f"[EX-{connection_id}] 🔴 Caller barge-in detected during speech_started!")
+                        current_utterance_id += 1
+                        is_speaking = False
+                        if pending_brain_task and not pending_brain_task.done():
+                            pending_brain_task.cancel()
+                        await send_exotel_clear()
+
                 elif event.event_type == "transcript_updated":
                     current_transcript = event.transcript
-                elif event.event_type == "speech_ended":
+                elif event.event_type == "speech_ended" or event.event_type == "final_transcript":
+                    if event.event_type == "final_transcript" and getattr(event, "transcript", None):
+                        current_transcript = event.transcript
+
                     logger.info(f"[EX-{connection_id}] 🎤 STT: Final transcript='{current_transcript}'")
-                    if current_transcript.strip() and len(current_transcript.replace(" ", "")) >= 3:
+                    if current_transcript.strip() and len(current_transcript.replace(" ", "")) >= 2:
                         if pending_brain_task and not pending_brain_task.done():
                             pending_brain_task.cancel()
                             try:
@@ -1839,15 +1869,6 @@ async def websocket_exotel_stream(
                     elif event_type == "media":
                         media_data = msg.get("media", {})
                         base64_payload = media_data.get("payload", "")
-
-                        # Handle barge-in if caller speaks while agent is speaking
-                        if is_speaking:
-                            logger.info(f"[EX-{connection_id}] 🔴 User barge-in detected during audio output!")
-                            current_utterance_id += 1
-                            if pending_brain_task and not pending_brain_task.done():
-                                pending_brain_task.cancel()
-                            await send_exotel_clear()
-                            is_speaking = False
 
                         pcm_16k = telephony_to_stt_pcm(
                             base64_payload=base64_payload,
