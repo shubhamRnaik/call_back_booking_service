@@ -1471,8 +1471,11 @@ async def websocket_exotel_stream(
     tenant_id: str = "default",
 ):
     """
-    Exotel Cloud Telephony WebSocket endpoint with 80ms chunk pacing,
-    strict single-greeting execution, and echo protection.
+    Production Exotel Cloud Telephony WebSocket endpoint.
+    Includes:
+    - 320-byte trailing chunk padding (eliminates tail clicks/gaps).
+    - 3-second rolling window transcript deduplication.
+    - 5-second silence fallback prompt task.
     """
     connection_id = str(uuid.uuid4())[:13]
     client_ip = _client_ip_from_websocket(websocket)
@@ -1512,21 +1515,9 @@ async def websocket_exotel_stream(
             "language": "hi-IN",
             "speaker": "shubh",
             "system_prompt": (
-                "You are an AI assistant for Glow & Shine Beauty Parlour. "
-                "Help customers book appointments for hair, skin, and makeup services politely and concisely. "
-                "Keep responses under 2 sentences in natural conversational Hindi. "
-                "If the user confirms they are satisfied or wishes to end the call, thank them and append [END_CALL] at the end."
-            ),
-        },
-        "CLINIC_001": {
-            "business_name": "Arogya Dental Clinic",
-            "language": "hi-IN",
-            "speaker": "shubh",
-            "system_prompt": (
-                "You are a helpful phone assistant for Arogya Dental Clinic. "
-                "Assist patients with dentist appointments and clinic timings clearly and politely. "
-                "Keep responses short (1-2 sentences). "
-                "If the patient is done or says goodbye, respond politely and append [END_CALL] at the end."
+                "You are an AI receptionist for Glow & Shine Beauty Parlour. "
+                "Help customers book appointments for hair, skin, and makeup. "
+                "Keep responses under 2 short sentences in natural conversational Hindi."
             ),
         },
         "default": {
@@ -1534,9 +1525,8 @@ async def websocket_exotel_stream(
             "language": "hi-IN",
             "speaker": "shubh",
             "system_prompt": (
-                f"You are a voice assistant for {settings.service_name}. "
-                "Answer customer queries concisely and politely in conversational Hindi or English as requested. "
-                "When the customer is satisfied or ready to disconnect, append [END_CALL] at the end."
+                f"You are a helpful voice receptionist for {settings.service_name}. "
+                "Answer customer queries politely and concisely in 1-2 sentences in Hindi or English."
             ),
         },
     }
@@ -1547,24 +1537,20 @@ async def websocket_exotel_stream(
     speaker = t_config["speaker"]
     custom_system_prompt = t_config["system_prompt"]
 
-    # Telephony state
-    call_id = None
     stream_sid = None
-    codec = "mulaw"
-    sample_rate = 8000
-    
     stt_client = None
     brain = None
     call_start_time = time.perf_counter()
     is_speaking = False
     speaking_hold_until = 0.0
     pending_brain_task = None
+    pending_fallback_task = None
     greeting_task = None
-    greeting_sent = False  # Prevents double greeting execution
+    greeting_sent = False
 
     current_utterance_id = 0
     last_processed_transcript = ""
-    last_processed_at = 0.0
+    last_transcript_time = 0.0
 
     async def send_exotel_clear():
         """Send Exotel clear frame to purge buffered audio on the phone line."""
@@ -1572,21 +1558,17 @@ async def websocket_exotel_stream(
         if not stream_sid:
             return
         try:
-            clear_event = {
-                "event": "clear",
-                "stream_sid": stream_sid,
-            }
-            await websocket.send_json(clear_event)
+            await websocket.send_json({"event": "clear", "stream_sid": stream_sid})
             logger.info(f"[EX-{connection_id}] 🧹 Sent Exotel 'clear' frame")
         except Exception as e:
-            logger.warning(f"[EX-{connection_id}] Failed to send Exotel clear frame: {e}")
+            logger.warning(f"[EX-{connection_id}] Clear frame failed: {e}")
 
     async def send_exotel_media_paced(pcm_24k_bytes: bytes, utterance_id: int):
         """
-        Optimized Pacing: Streams mu-law audio to Exotel in 80ms chunks (640 bytes)
-        with smooth delay. Eliminates audio blur, jitter, and buffer overruns.
+        Streams 16-bit PCM to Exotel in 1280-byte (80ms) chunks.
+        Pads trailing chunks smaller than 320 bytes to prevent audio tail gaps.
         """
-        nonlocal stream_sid, codec, is_speaking
+        nonlocal stream_sid, is_speaking
         if not stream_sid or not pcm_24k_bytes:
             return
 
@@ -1594,61 +1576,71 @@ async def websocket_exotel_stream(
             b64_payload = tts_pcm_to_telephony(
                 pcm_bytes=pcm_24k_bytes,
                 source_sr=22050,
-                target_codec=codec,
-                target_sr=sample_rate,
+                target_codec="linear16",
+                target_sr=8000,
             )
             if not b64_payload:
                 return
 
-            raw_mulaw_bytes = base64.b64decode(b64_payload)
-            chunk_size = 640  # 80ms frame at 8000Hz 8-bit mu-law
+            raw_bytes = base64.b64decode(b64_payload)
+            chunk_size = 1280  # 80ms at 8kHz 16-bit PCM
 
-            for i in range(0, len(raw_mulaw_bytes), chunk_size):
+            # FIX A: Pad trailing chunk if smaller than 320 bytes
+            remainder = len(raw_bytes) % chunk_size
+            if 0 < remainder < 320:
+                pad_bytes = 320 - remainder
+                raw_bytes += b'\x00' * pad_bytes
+                logger.info(
+                    f"[EX-{connection_id}] 🧩 Trailing chunk padded: {remainder}B -> {remainder + pad_bytes}B"
+                )
+
+            total_chunks = (len(raw_bytes) + chunk_size - 1) // chunk_size
+            logger.info(f"[EX-{connection_id}] 📤 Streaming {len(raw_bytes)}B ({total_chunks} chunks)...")
+
+            for i in range(0, len(raw_bytes), chunk_size):
                 if not is_speaking or utterance_id != current_utterance_id:
-                    logger.info(f"[EX-{connection_id}] 🛑 Audio stream interrupted")
+                    logger.info(f"[EX-{connection_id}] 🛑 Audio streaming interrupted")
                     break
 
-                chunk = raw_mulaw_bytes[i:i + chunk_size]
+                chunk = raw_bytes[i:i + chunk_size]
                 b64_chunk = base64.b64encode(chunk).decode("utf-8")
 
-                media_event = {
+                await websocket.send_json({
                     "event": "media",
                     "stream_sid": stream_sid,
-                    "media": {
-                        "payload": b64_chunk,
-                    },
-                }
-                await websocket.send_json(media_event)
-                # 80ms pacing delay (70ms sleep + socket latency ≈ 80ms)
-                await asyncio.sleep(0.070)
+                    "media": {"payload": b64_chunk},
+                })
+                await asyncio.sleep(0.075)
 
         except Exception as e:
-            logger.warning(f"[EX-{connection_id}] Failed to send Exotel media frame: {e}")
+            logger.warning(f"[EX-{connection_id}] Media stream error: {e}")
 
     async def process_transcript_to_response(transcript: str):
-        """Full-duplex Exotel pipeline: LLM streaming + parallel TTS."""
-        nonlocal is_speaking, speaking_hold_until, current_utterance_id, stream_sid, last_processed_transcript, last_processed_at
+        """Full-duplex response engine."""
+        nonlocal is_speaking, speaking_hold_until, current_utterance_id
+        nonlocal last_processed_transcript, last_transcript_time
 
         clean_transcript = transcript.strip()
         if not clean_transcript or len(clean_transcript.replace(" ", "")) < 2:
             return
 
-        now_monotonic = time.perf_counter()
-        if clean_transcript == last_processed_transcript and (now_monotonic - last_processed_at) <= 2.5:
-            logger.info(f"[EX-{connection_id}] ⏭️ Skipping duplicate transcript within 2.5s window: '{clean_transcript}'")
+        # FIX B1: 3-second rolling window deduplication
+        now = time.perf_counter()
+        if clean_transcript == last_processed_transcript and (now - last_transcript_time) < 3.0:
+            logger.info(f"[EX-{connection_id}] ⏭️ Duplicate skipped (within 3s): '{clean_transcript}'")
             return
 
         last_processed_transcript = clean_transcript
-        last_processed_at = now_monotonic
+        last_transcript_time = now
         current_utterance_id += 1
         this_utterance_id = current_utterance_id
 
         logger.info(f"[EX-{connection_id}] 📥 CALLER SAID: '{clean_transcript}'")
 
-        turn_tts_client = SarvamWebSocketClient()
+        turn_tts = SarvamWebSocketClient()
         tts_connect_task = asyncio.create_task(
             _retry_async(
-                lambda: turn_tts_client.connect(
+                lambda: turn_tts.connect(
                     target_language_code=language_code,
                     speaker=speaker,
                     pace=0.95,
@@ -1665,7 +1657,6 @@ async def websocket_exotel_stream(
 
             async for token in brain.stream_response(llm_input):
                 if this_utterance_id != current_utterance_id:
-                    logger.info(f"[EX-{connection_id}] 🛑 Interrupted during LLM generation")
                     await send_exotel_clear()
                     return
 
@@ -1677,61 +1668,43 @@ async def websocket_exotel_stream(
                 response_tokens.append(token)
 
             raw_response_text = "".join(response_tokens).strip()
-
             should_hangup = "[END_CALL]" in raw_response_text
-            clean_response_text = raw_response_text.replace("[END_CALL]", "").strip()
+            clean_response = raw_response_text.replace("[END_CALL]", "").strip()
 
-            if not clean_response_text or this_utterance_id != current_utterance_id:
+            if not clean_response or this_utterance_id != current_utterance_id:
                 return
 
-            logger.info(f"[EX-{connection_id}] 🧠 AGENT RESPONSE: '{clean_response_text}' (Hangup: {should_hangup})")
+            logger.info(f"[EX-{connection_id}] 🧠 AGENT RESPONSE: '{clean_response}' (Hangup: {should_hangup})")
 
             tts_connected = await tts_connect_task
             if not tts_connected or this_utterance_id != current_utterance_id:
-                logger.error(f"[EX-{connection_id}] ❌ Per-turn TTS connection failed or turn interrupted")
                 return
 
-            normalized_text = text_normalizer.normalize(
-                clean_response_text, target_language_code=language_code
-            )
-
-            sent = await turn_tts_client.send_text_chunk(normalized_text)
-            if sent:
-                await turn_tts_client.send_flush()
-
+            norm_text = text_normalizer.normalize(clean_response, target_language_code=language_code)
+            if await turn_tts.send_text_chunk(norm_text):
+                await turn_tts.send_flush()
                 is_speaking = True
-                audio_chunks_sent = 0
-                total_bytes_sent = 0
 
-                async for audio_chunk in turn_tts_client.stream_audio_chunks(
+                async for chunk in turn_tts.stream_audio_chunks(
                     initial_timeout_sec=2.5,
                     post_audio_idle_timeout_sec=0.4,
                     max_duration_sec=12.0,
                 ):
                     if this_utterance_id != current_utterance_id:
-                        logger.info(f"[EX-{connection_id}] 🛑 Interrupted during audio stream")
                         await send_exotel_clear()
                         break
+                    await send_exotel_media_paced(chunk, this_utterance_id)
 
-                    audio_chunks_sent += 1
-                    total_bytes_sent += len(audio_chunk)
-                    await send_exotel_media_paced(audio_chunk, this_utterance_id)
-
-                logger.info(f"[EX-{connection_id}] 🔊 Audio complete ({audio_chunks_sent} chunks, {total_bytes_sent} bytes)")
+                logger.info(f"[EX-{connection_id}] 🔊 Response stream finished")
 
             if should_hangup and this_utterance_id == current_utterance_id:
-                audio_duration_sec = total_bytes_sent / 44100.0 if total_bytes_sent > 0 else 0.5
-                wait_time = max(1.0, audio_duration_sec + 0.8)
-                logger.info(f"[EX-{connection_id}] 🛑 [END_CALL] tag detected. Waiting {wait_time:.2f}s before closing...")
-                await asyncio.sleep(wait_time)
+                logger.info(f"[EX-{connection_id}] 🛑 [END_CALL] received. Closing line...")
+                await asyncio.sleep(1.2)
                 try:
-                    await websocket.close(code=1000, reason="Call completed successfully")
-                except Exception as e:
-                    logger.warning(f"[EX-{connection_id}] Error closing websocket: {e}")
-                return
+                    await websocket.close(code=1000, reason="Call completed")
+                except Exception:
+                    pass
 
-        except asyncio.CancelledError:
-            logger.debug(f"[EX-{connection_id}] 🛑 Turn cancelled")
         except Exception as e:
             logger.error(f"[EX-{connection_id}] ❌ Turn error: {e}", exc_info=True)
         finally:
@@ -1739,19 +1712,19 @@ async def websocket_exotel_stream(
                 tts_connect_task.cancel()
                 await asyncio.gather(tts_connect_task, return_exceptions=True)
             try:
-                await turn_tts_client.disconnect()
+                await turn_tts.disconnect()
             except Exception:
                 pass
 
             is_speaking = False
-            speaking_hold_until = time.perf_counter() + 0.6
+            speaking_hold_until = time.perf_counter() + 0.5
 
     async def stream_greeting_audio(greeting_text: str):
-        """Stream initial call greeting to Exotel caller."""
+        """Stream initial call greeting."""
         nonlocal is_speaking, speaking_hold_until, current_utterance_id
 
         is_speaking = True
-        logger.info(f"[EX-{connection_id}] 🎤 Synthesizing greeting: '{greeting_text}'")
+        logger.info(f"[EX-{connection_id}] 🎤 Synthesizing greeting...")
 
         turn_tts = SarvamWebSocketClient()
         try:
@@ -1775,61 +1748,36 @@ async def websocket_exotel_stream(
                         await send_exotel_media_paced(chunk, current_utterance_id)
                     logger.info(f"[EX-{connection_id}] ✓ Greeting audio sent to Exotel")
         except Exception as e:
-            logger.error(f"[EX-{connection_id}] ❌ Greeting synthesis failed: {e}")
+            logger.error(f"[EX-{connection_id}] ❌ Greeting error: {e}")
         finally:
             try:
                 await turn_tts.disconnect()
             except Exception:
                 pass
             is_speaking = False
-            speaking_hold_until = time.perf_counter() + 0.6
+            speaking_hold_until = time.perf_counter() + 0.5
 
     async def stream_stt_transcripts():
-        """Listen to STT transcripts and trigger brain processing cleanly."""
-        nonlocal pending_brain_task
-
-        accumulated_text = ""
-        silence_timer = None
-
-        async def fallback_after_silence():
-            nonlocal accumulated_text
-            await asyncio.sleep(5.0)
-            if accumulated_text:
-                final_fallback = accumulated_text.strip()
-                accumulated_text = ""
-                logger.info(f"[EX-{connection_id}] ⏱️ Silence fallback triggered with transcript: '{final_fallback}'")
-                nonlocal pending_brain_task
-                if pending_brain_task and not pending_brain_task.done():
-                    pending_brain_task.cancel()
-                    try:
-                        await pending_brain_task
-                    except asyncio.CancelledError:
-                        pass
-                pending_brain_task = asyncio.create_task(
-                    process_transcript_to_response(final_fallback)
-                )
+        """Process STT transcripts from caller with 5s silence timeout."""
+        nonlocal pending_brain_task, pending_fallback_task
 
         try:
             async for event in stt_client.stream_transcripts():
-                # Ignore transcripts detected while agent is speaking or during echo hold
-                if is_speaking or time.perf_counter() < speaking_hold_until:
-                    continue
-
                 if event.event_type in ("final_transcript", "transcript_updated"):
                     transcript_text = getattr(event, "transcript", "").strip()
-                    
-                    if event.event_type == "transcript_updated" and transcript_text:
-                        accumulated_text = transcript_text
-                        if silence_timer and not silence_timer.done():
-                            silence_timer.cancel()
-                        silence_timer = asyncio.create_task(fallback_after_silence())
 
-                    elif event.event_type == "final_transcript" and transcript_text:
-                        if silence_timer and not silence_timer.done():
-                            silence_timer.cancel()
-                        accumulated_text = ""
-                        logger.info(f"[EX-{connection_id}] 🎤 STT FINAL TRANSCRIPT: '{transcript_text}'")
-                        
+                    # Ignore mic input while bot speaks
+                    if is_speaking or time.perf_counter() < speaking_hold_until:
+                        continue
+
+                    if event.event_type == "final_transcript" and transcript_text:
+                        logger.info(f"[EX-{connection_id}] 🎤 STT TRANSCRIPT: '{transcript_text}'")
+
+                        # Cancel pending silence fallback timer
+                        if pending_fallback_task and not pending_fallback_task.done():
+                            pending_fallback_task.cancel()
+
+                        # Cancel pending brain task if running
                         if pending_brain_task and not pending_brain_task.done():
                             pending_brain_task.cancel()
                             try:
@@ -1841,6 +1789,17 @@ async def websocket_exotel_stream(
                             process_transcript_to_response(transcript_text)
                         )
 
+                        # FIX B2: Schedule 5-second silence check
+                        async def silence_fallback():
+                            await asyncio.sleep(5.0)
+                            if not is_speaking:
+                                logger.info(f"[EX-{connection_id}] ⏱️ 5.0s silence detected. Re-engaging caller...")
+                                await process_transcript_to_response(
+                                    "Kya aap wahan hain? Kya aapko koi aur madad chahiye?"
+                                )
+
+                        pending_fallback_task = asyncio.create_task(silence_fallback())
+
                 elif event.event_type == "error":
                     logger.error(f"[EX-{connection_id}] 🎤 STT error: {event.error_message}")
 
@@ -1848,18 +1807,14 @@ async def websocket_exotel_stream(
             logger.debug(f"[EX-{connection_id}] STT listener cancelled")
         except Exception as e:
             logger.error(f"[EX-{connection_id}] STT listener error: {e}", exc_info=True)
-        finally:
-            if silence_timer and not silence_timer.done():
-                silence_timer.cancel()
 
     # Initialize STT and Brain
     stt_client = SarvamSaarasSTTClient()
     brain = StreamingBrain(system_prompt=custom_system_prompt)
-    asyncio.create_task(brain.prewarm())
 
     stt_connected = await _retry_async(stt_client.connect, "stt_connect_exotel")
     if not stt_connected:
-        logger.error(f"[EX-{connection_id}] ❌ Failed to connect STT client")
+        logger.error(f"[EX-{connection_id}] ❌ STT Connection Failed")
         await websocket.close(code=4001, reason="STT Connection Failed")
         return
 
@@ -1868,13 +1823,11 @@ async def websocket_exotel_stream(
     try:
         while True:
             if (time.perf_counter() - call_start_time) > settings.max_ws_session_seconds:
-                logger.info(f"[EX-{connection_id}] Session duration limit reached")
                 break
 
             try:
                 data = await websocket.receive()
-            except RuntimeError as e:
-                logger.info(f"[EX-{connection_id}] ℹ️ Exotel websocket closed: {e}")
+            except RuntimeError:
                 break
             except Exception as e:
                 logger.error(f"[EX-{connection_id}] ❌ Websocket receive error: {e}")
@@ -1885,66 +1838,50 @@ async def websocket_exotel_stream(
                     msg = json.loads(data["text"])
                     event_type = msg.get("event") or msg.get("type")
 
-                    # Trigger greeting ONLY when 'start' event arrives with valid stream_sid
                     if event_type == "start" and not greeting_sent:
                         start_data = msg.get("start", {})
-                        call_id = msg.get("call_id") or start_data.get("call_id") or msg.get("stream_sid")
-                        stream_sid = msg.get("stream_sid") or start_data.get("stream_sid") or call_id
-                        media_format = start_data.get("media_format", {})
-                        codec = media_format.get("encoding", "mulaw")
-                        sample_rate = int(media_format.get("sample_rate", 8000))
+                        stream_sid = msg.get("stream_sid") or start_data.get("stream_sid")
 
                         if stream_sid:
                             greeting_sent = True
-                            logger.info(
-                                f"[EX-{connection_id}] 🏁 Call started: call_id={call_id}, "
-                                f"stream_sid={stream_sid}, codec={codec}, sample_rate={sample_rate}"
-                            )
-
-                            greeting_text = (
-                                f"नमस्ते! {business_name} में कॉल करने के लिए धन्यवाद। मैं आपकी क्या मदद कर सकता हूँ?"
-                            )
+                            logger.info(f"[EX-{connection_id}] 🏁 Call started, stream_sid={stream_sid}")
+                            greeting_text = f"नमस्ते! {business_name} में कॉल करने के लिए धन्यवाद। मैं आपकी क्या मदद कर सकता हूँ?"
                             greeting_task = asyncio.create_task(stream_greeting_audio(greeting_text))
 
                     elif event_type == "media":
                         media_data = msg.get("media", {})
                         base64_payload = media_data.get("payload", "")
 
-                        # Continuous STT audio feed: always process and send PCM chunk to keep STT WebSocket alive.
-                        # (Echo suppression and transcript filtering are handled inside stream_stt_transcripts)
                         pcm_16k = telephony_to_stt_pcm(
                             base64_payload=base64_payload,
-                            source_codec=codec,
-                            source_sr=sample_rate,
+                            source_codec="linear16",
+                            source_sr=8000,
                             target_sr=16000,
                         )
                         if pcm_16k:
                             await stt_client.send_audio_chunk(pcm_16k)
 
                     elif event_type in ("stop", "closed"):
-                        logger.info(f"[EX-{connection_id}] 🛑 Call stopped event received from Exotel")
                         break
 
                 except json.JSONDecodeError:
-                    logger.warning(f"[EX-{connection_id}] Received invalid JSON text message")
+                    pass
                 except Exception as e:
-                    logger.error(f"[EX-{connection_id}] Error handling Exotel message: {e}", exc_info=True)
+                    logger.error(f"[EX-{connection_id}] Message handling error: {e}", exc_info=True)
 
     except WebSocketDisconnect:
-        logger.info(f"[EX-{connection_id}] Exotel client disconnected")
-    except Exception as e:
-        logger.error(f"[EX-{connection_id}] ❌ Connection error in main loop: {e}", exc_info=True)
-
+        logger.info(f"[EX-{connection_id}] Exotel disconnected")
     finally:
         if connection_registered:
             await _unregister_ws_connection(client_ip)
 
-        logger.info(f"[EX-{connection_id}] 🧹 Cleaning up Exotel connection...")
         try:
             if greeting_task and not greeting_task.done():
                 greeting_task.cancel()
             if pending_brain_task and not pending_brain_task.done():
                 pending_brain_task.cancel()
+            if pending_fallback_task and not pending_fallback_task.done():
+                pending_fallback_task.cancel()
             if stt_task and not stt_task.done():
                 stt_task.cancel()
         except Exception:
@@ -1961,7 +1898,7 @@ async def websocket_exotel_stream(
         except Exception:
             pass
 
-        logger.info(f"[EX-{connection_id}] ✓ Exotel call stream ended (duration: {(time.perf_counter() - call_start_time):.2f}s)")
+        logger.info(f"[EX-{connection_id}] ✓ Exotel call stream ended")
 
 
 async def _build_readiness() -> HealthCheckResponse:
