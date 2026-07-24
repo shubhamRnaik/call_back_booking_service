@@ -193,6 +193,27 @@ def _with_language_lock(user_text: str, language_code: str) -> str:
     return f"{instruction}\n\nUser: {user_text}"
 
 
+def _with_slot_context(user_text: str, language_code: str, session: CallSession) -> str:
+    """Like _with_language_lock, but also grounds the LLM in booking slots
+    already confirmed this call (session.extracted_slots) so it stops
+    re-asking a question that's already been answered - e.g. the caller
+    asked "which doctor is available", the bot named the one available
+    doctor, but nothing recorded that as a confirmed slot, so the bot kept
+    re-asking "do you want to book with Dr. X?" every turn instead of moving
+    on to date/time (repeated-question bug observed on a live call,
+    2026-07-24)."""
+    base = _with_language_lock(user_text, language_code)
+    known = {k: v for k, v in (session.extracted_slots or {}).items() if v}
+    if not known:
+        return base
+    known_bits = ", ".join(f"{k}={v}" for k, v in known.items())
+    state_note = (
+        "Already confirmed this call - do NOT ask about these again, move "
+        f"straight to whatever is still missing: {known_bits}."
+    )
+    return f"{state_note}\n\n{base}"
+
+
 async def _retry_async(
     operation: Callable[[], Awaitable[Any]],
     operation_name: str,
@@ -2015,6 +2036,21 @@ async def _websocket_exotel_stream_impl(
 
     # Central in-memory session record for this call (Step 3/5 wiring).
     session = session_manager.create(connection_id, tenant_id)
+
+    # If the tenant offers exactly one AVAILABLE doctor/service, pre-fill it
+    # as a known slot right away. Otherwise the caller asking "which doctor
+    # is available" gets told the (only) name by the bot, but the bot never
+    # recorded that as a confirmed slot (session.extracted_slots only tracks
+    # names the CALLER themselves said), so it kept re-asking "do you want to
+    # book with Dr. X?" instead of moving on to date/time - the repeated-
+    # question bug observed on a live CLINIC_001 call (2026-07-24).
+    available_items = [
+        it for it in (t_config.get("items") or [])
+        if (it.get("status", "AVAILABLE") == "AVAILABLE") and it.get("name")
+    ]
+    if len(available_items) == 1:
+        session.update_slots(item=available_items[0]["name"])
+
     _log_observability("call_connected", session=session, tenant_source=t_config["source"])
 
     stream_sid = None
@@ -2214,7 +2250,7 @@ async def _websocket_exotel_stream_impl(
 
         try:
             brain_start = time.perf_counter()
-            llm_input = _with_language_lock(clean_transcript, language_code)
+            llm_input = _with_slot_context(clean_transcript, language_code, session)
             response_tokens = []
             ttft_recorded = False
 
