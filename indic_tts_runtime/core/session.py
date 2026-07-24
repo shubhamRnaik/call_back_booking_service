@@ -74,6 +74,13 @@ class CallSession:
         # the same open-ended question (see _process_booking_tag in main.py).
         self.datetime_parse_failures: int = 0
 
+        # True only once _process_booking_tag() has actually received a
+        # CONFIRMED/DUPLICATE_RETRY_IGNORED status back from Supabase for
+        # this call. Used as a guard against the LLM hanging up on an
+        # [END_CALL] turn while implying (in free text) that a booking
+        # succeeded when no DB write has actually happened yet.
+        self.booking_confirmed: bool = False
+
     def set_call_id(self, call_id: str) -> None:
         """Update call_id once the real telephony call id becomes known
         (e.g. Exotel's stream_sid arrives in the 'start' event, after

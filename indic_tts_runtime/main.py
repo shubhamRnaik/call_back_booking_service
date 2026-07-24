@@ -1810,28 +1810,32 @@ def _log_slots_diff(session: CallSession, before: dict) -> None:
 
 _BOOKING_LOCALIZED_STRINGS = {
     "need_service": {
-        "hi-IN": "Maaf kijiye, kripya bataiye aap kis doctor ya service ke liye booking karna chahte hain.",
+        "hi-IN": "माफ़ कीजिए, कृपया बताइए आप किस डॉक्टर या सर्विस के लिए बुकिंग करना चाहते हैं।",
         "en-IN": "Sorry, could you tell me which doctor or service you'd like to book?",
     },
     "need_datetime": {
-        "hi-IN": "Maaf kijiye, kripya apni pasandeeda date aur time dobara bataiye.",
+        "hi-IN": "माफ़ कीजिए, कृपया अपनी पसंदीदा तारीख़ और समय दोबारा बताइए।",
         "en-IN": "Sorry, could you repeat your preferred date and time?",
     },
     "slot_taken": {
-        "hi-IN": "Yeh samay pehle se book hai. Kripya koi doosra samay bataiye.",
+        "hi-IN": "यह समय पहले से बुक है। कृपया कोई और समय बताइए।",
         "en-IN": "That time slot is already booked. Could you suggest another time?",
     },
     "booking_error": {
-        "hi-IN": "Abhi booking system mein dikkat aa rahi hai. Kripya thodi der baad dobara call karein.",
+        "hi-IN": "अभी बुकिंग सिस्टम में थोड़ी दिक्कत आ रही है। कृपया थोड़ी देर बाद दोबारा कॉल करें।",
         "en-IN": "We're having trouble with our booking system right now. Please try calling again shortly.",
     },
     "using_caller_number": {
-        "hi-IN": "Main aapke isi number ka use kar raha hoon jisse aapne call kiya hai.",
+        "hi-IN": "मैं आपके इसी नंबर का उपयोग कर रहा हूँ जिससे आपने कॉल किया है।",
         "en-IN": "I'll use the number you're calling from for this booking.",
     },
     "need_datetime_escalated": {
-        "hi-IN": "Kripya date aur time ise tarah bataiye - jaise '25 July, shaam 6 baje' ya '25/07/2026 6 PM'.",
+        "hi-IN": "कृपया तारीख़ और समय इस तरह बताइए - जैसे '25 जुलाई, शाम 6 बजे' या '25/07/2026 6 PM'।",
         "en-IN": "Please give the date and time like this - e.g. '25 July, 6 PM' or '25/07/2026 6 PM'.",
+    },
+    "need_confirmation_before_hangup": {
+        "hi-IN": "अभी आपकी बुकिंग पूरी तरह कन्फर्म नहीं हुई है - कृपया तारीख़ और समय एक बार फिर बता दीजिए ताकि मैं इसे पक्का कर सकूँ।",
+        "en-IN": "Your booking isn't confirmed yet - could you share your preferred date and time once more so I can complete it?",
     },
 }
 
@@ -1944,6 +1948,7 @@ async def _process_booking_tag(
         )
 
         if status in ("CONFIRMED", "DUPLICATE_RETRY_IGNORED"):
+            session.booking_confirmed = True
             session.reset_slots()
             if language_code == "en-IN":
                 return (
@@ -2078,6 +2083,13 @@ async def _websocket_exotel_stream_impl(
     pending_fallback_task = None
     greeting_task = None
     greeting_sent = False
+    # Strong references to detached hangup-finalizer tasks (drain-wait +
+    # websocket.close()) so they survive independently of pending_brain_task
+    # - barge-in cancels pending_brain_task, and asyncio.CancelledError is a
+    # BaseException that would otherwise skip the websocket.close() call if
+    # it were awaited inline inside the cancelled task (see repo memory /
+    # AGENTS.md for details on this bug).
+    _hangup_finalizer_tasks: set = set()
 
     last_processed_transcript = ""
     last_transcript_time = 0.0
@@ -2298,6 +2310,23 @@ async def _websocket_exotel_stream_impl(
                 )
                 _log_observability("booking_tag_detected", session=session, tag_body=booking_match.group(1))
 
+            if (
+                should_hangup
+                and not booking_match
+                and not session.booking_confirmed
+                and session.extracted_slots.get("item")
+            ):
+                # Guard against the LLM hanging up while implying (in free
+                # text) that a booking succeeded, when no DB-confirmed
+                # booking actually exists for this call yet. Override the
+                # farewell with a truthful prompt and keep the call open.
+                logger.warning(
+                    f"[EX-{connection_id}] ⚠️ Suppressed unconfirmed hangup - "
+                    f"LLM tried to end call without a confirmed booking."
+                )
+                clean_response = _localized("need_confirmation_before_hangup", language_code)
+                should_hangup = False
+
             if not clean_response or not session.is_current_utterance(this_utterance_id):
                 return
 
@@ -2329,12 +2358,27 @@ async def _websocket_exotel_stream_impl(
                 logger.info(f"[EX-{connection_id}] 🛑 [END_CALL] received. Closing line...")
                 telephony_bytes_per_sec = settings.EXOTEL_SAMPLE_RATE * settings.EXOTEL_BYTES_PER_SAMPLE
                 wait_sec = compute_playback_drain_seconds(total_bytes_sent, telephony_bytes_per_sec)
-                await asyncio.sleep(wait_sec)
-                _log_observability("call_hangup", session=session, total_bytes_sent=total_bytes_sent, drain_sec=wait_sec)
-                try:
-                    await websocket.close(code=1000, reason="Call completed")
-                except Exception:
-                    pass
+
+                async def _finalize_hangup(wait_sec: float = wait_sec):
+                    # Runs as a DETACHED task (not awaited inline) so that a
+                    # barge-in cancelling pending_brain_task mid-drain-wait
+                    # cannot also cancel this close() call - previously the
+                    # sleep+close lived inline in this same task, so
+                    # asyncio.CancelledError raised during the sleep (from
+                    # barge-in's pending_brain_task.cancel()) silently skipped
+                    # websocket.close() entirely, leaving the call connected.
+                    await asyncio.sleep(wait_sec)
+                    _log_observability(
+                        "call_hangup", session=session, total_bytes_sent=total_bytes_sent, drain_sec=wait_sec
+                    )
+                    try:
+                        await websocket.close(code=1000, reason="Call completed")
+                    except Exception:
+                        pass
+
+                hangup_task = asyncio.create_task(_finalize_hangup())
+                _hangup_finalizer_tasks.add(hangup_task)
+                hangup_task.add_done_callback(_hangup_finalizer_tasks.discard)
 
         except Exception as e:
             logger.error(f"[EX-{connection_id}] ❌ Turn error: {e}", exc_info=True)
