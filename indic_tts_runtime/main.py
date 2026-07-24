@@ -140,6 +140,28 @@ def _is_authorized(api_key: Optional[str]) -> bool:
     return bool(expected) and expected == presented
 
 
+def _is_exotel_ws_authorized(token: Optional[str]) -> bool:
+    """Validate the optional Exotel WS shared-secret query token.
+
+    Unset EXOTEL_WS_SHARED_TOKEN means auth is not enforced (backward
+    compatible with existing deployments/tests); once configured, every
+    connection must present a matching `?token=` query param.
+    """
+    expected = (settings.exotel_ws_token or "").strip()
+    if not expected:
+        return True
+    return (token or "").strip() == expected
+
+
+def _mask_phone(phone: str) -> str:
+    """Mask all but the last 4 digits of a phone number for safe logging
+    (avoid leaking caller PII into application logs - OWASP A09/privacy)."""
+    digits = str(phone or "")
+    if len(digits) <= 4:
+        return "*" * len(digits)
+    return "*" * (len(digits) - 4) + digits[-4:]
+
+
 def _allow_rate_limit(bucket: deque, limit: int, window_sec: float) -> bool:
     """Sliding-window in-memory rate limiter."""
     now = time.time()
@@ -370,11 +392,24 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Configure CORS
+# Configure CORS. Wildcard origin + credentials is a credential-leak/CSRF
+# risk (OWASP A05 Security Misconfiguration) - browsers already refuse to
+# honor allow_credentials with a literal "*" origin, but we make the safe
+# behavior explicit here rather than depending on that. Set
+# CORS_ALLOWED_ORIGINS to a comma-separated list of real origins in
+# production to enable credentialed cross-origin requests.
+_cors_origins_raw = (settings.cors_allowed_origins or "*").strip()
+if _cors_origins_raw == "*":
+    _cors_origins = ["*"]
+    _cors_allow_credentials = False
+else:
+    _cors_origins = [o.strip() for o in _cors_origins_raw.split(",") if o.strip()]
+    _cors_allow_credentials = True
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -408,11 +443,18 @@ async def security_and_rate_limit_middleware(request: Request, call_next):
 
     return await call_next(request)
 
-# Serve static files (web UI)
-tests_dir = os.path.join(os.path.dirname(__file__), "..", "tests")
-if os.path.exists(tests_dir):
-    app.mount("/tests", StaticFiles(directory=tests_dir), name="tests")
-    logger.info(f"✓ Static files mounted: /tests → {tests_dir}")
+# Serve static files (web UI). The /tests mount is dev-only: it would
+# otherwise publicly expose test scripts/fixtures (potential internal
+# details, sample payloads, etc.) - OWASP A05 Security Misconfiguration /
+# improper asset exposure. Gate it behind an explicit opt-in env var so it
+# never ships enabled in production by default.
+if settings.expose_dev_static_routes:
+    tests_dir = os.path.join(os.path.dirname(__file__), "..", "tests")
+    if os.path.exists(tests_dir):
+        app.mount("/tests", StaticFiles(directory=tests_dir), name="tests")
+        logger.info(f"✓ Static files mounted: /tests → {tests_dir} (dev-only)")
+else:
+    logger.info("ℹ️ /tests static mount disabled (set EXPOSE_DEV_STATIC_ROUTES=true for local dev)")
 
 static_dir = os.path.join(os.path.dirname(__file__), "..", "static")
 if os.path.exists(static_dir):
@@ -1625,13 +1667,13 @@ def _build_supabase_system_prompt(tenant_row: dict, items: list) -> str:
         "- Ask which doctor/service the caller wants (match against the list above).\n"
         "- Ask their preferred date and time.\n"
         "- Ask their full name.\n"
-        "- Ask their phone number for confirmation.\n"
-        "- Once you have ALL FOUR of these (service, date/time, name, phone), "
+        f"- {_localized('using_caller_number', 'hi-IN')} Do NOT ask the caller "
+        "for their phone number - the system already has it from the call itself.\n"
+        "- Once you have ALL THREE of these (service, date/time, name), "
         "respond with ONLY this exact machine-readable tag and nothing else "
         "(no extra sentence, no punctuation outside it): "
         "[BOOK_APPOINTMENT: item=<service/doctor name>|when=<date and time as "
-        "the caller said it>|name=<caller's full name>|phone=<caller's phone "
-        "number>]\n"
+        "the caller said it>|name=<caller's full name>]\n"
         "- Do NOT say anything else in that turn - the system will speak the "
         "confirmation for you.\n"
         "- If the caller says goodbye/thank you and no booking is in "
@@ -1711,6 +1753,40 @@ def _parse_booking_tag_fields(tag_body: str) -> dict:
     return fields
 
 
+def _extract_partial_slots(transcript: str, items: list) -> dict:
+    """
+    Best-effort, cheap partial slot extraction from a single caller utterance,
+    independent of the LLM's own [BOOK_APPOINTMENT: ...] tag (which only fires
+    once ALL fields have been gathered). This lets session.extracted_slots
+    reflect information as soon as it's mentioned instead of staying {} for
+    the whole call. Only matches known tenant item/service names against the
+    transcript - date/time/name extraction is deliberately NOT attempted here
+    (no cheap, reliable heuristic) to avoid false positives; that context is
+    still available to the LLM via StreamingBrain's own persistent
+    conversation history (see brain/llm_service.py's _conversation_history),
+    so it isn't lost even without a dedicated slot for it.
+    """
+    fields = {}
+    lowered = transcript.lower()
+    for item in items:
+        name = (item.get("name") or "").strip()
+        if name and name.lower() in lowered:
+            fields["item"] = name
+            break
+    return fields
+
+
+def _log_slots_diff(session: CallSession, before: dict) -> None:
+    """Emit a structured JSON log line showing how a turn changed the
+    session's extracted_slots (Issue 3 observability requirement)."""
+    _log_observability(
+        "slots_updated",
+        session=session,
+        before=before,
+        after=dict(session.extracted_slots),
+    )
+
+
 _BOOKING_LOCALIZED_STRINGS = {
     "need_service": {
         "hi-IN": "Maaf kijiye, kripya bataiye aap kis doctor ya service ke liye booking karna chahte hain.",
@@ -1727,6 +1803,10 @@ _BOOKING_LOCALIZED_STRINGS = {
     "booking_error": {
         "hi-IN": "Abhi booking system mein dikkat aa rahi hai. Kripya thodi der baad dobara call karein.",
         "en-IN": "We're having trouble with our booking system right now. Please try calling again shortly.",
+    },
+    "using_caller_number": {
+        "hi-IN": "Main aapke isi number ka use kar raha hoon jisse aapne call kiya hai.",
+        "en-IN": "I'll use the number you're calling from for this booking.",
     },
 }
 
@@ -1756,7 +1836,10 @@ async def _process_booking_tag(
     item_name_wanted = fields.get("item")
     when_phrase = fields.get("when")
     patient_name = fields.get("name")
-    patient_phone = fields.get("phone")
+    # Prefer the caller's own number captured from the telephony 'start'
+    # event (Issue 7) - only fall back to a phone the LLM extracted from the
+    # tag if the caller happened to volunteer a different number.
+    patient_phone = fields.get("phone") or session.caller_phone or ""
 
     items = tenant_config.get("items") or []
     tenant_id = session.tenant_id
@@ -1850,8 +1933,13 @@ async def _process_booking_tag(
 async def websocket_exotel_stream_query_route(
     websocket: WebSocket,
     tenant_id: str = "default",
+    token: Optional[str] = None,
 ):
     """Exotel entrypoint using ?tenant_id=... query param (backward-compatible)."""
+    if not _is_exotel_ws_authorized(token):
+        request_metrics["auth_failures"] += 1
+        await websocket.close(code=4401, reason="Unauthorized")
+        return
     await _websocket_exotel_stream_impl(websocket, tenant_id)
 
 
@@ -1859,8 +1947,13 @@ async def websocket_exotel_stream_query_route(
 async def websocket_exotel_stream_path_route(
     websocket: WebSocket,
     tenant_id: str,
+    token: Optional[str] = None,
 ):
     """Exotel entrypoint using a /exotel-stream/{tenant_id} path param."""
+    if not _is_exotel_ws_authorized(token):
+        request_metrics["auth_failures"] += 1
+        await websocket.close(code=4401, reason="Unauthorized")
+        return
     await _websocket_exotel_stream_impl(websocket, tenant_id)
 
 
@@ -1937,6 +2030,16 @@ async def _websocket_exotel_stream_impl(
 
     last_processed_transcript = ""
     last_transcript_time = 0.0
+    # Timestamp of the most recent STT activity of ANY kind (speech_started,
+    # a transcript part, or a final_transcript) - drives the silence-fallback
+    # timer (Issue 1) instead of only counting from when a debounce cycle
+    # finished processing.
+    last_activity_ts = time.perf_counter()
+    # True from the moment speech_started fires until the matching
+    # final_transcript/speech_ended arrives. A single long utterance with no
+    # interim STT signal in between must NEVER let the silence-fallback timer
+    # fire while this is True, however long the utterance takes.
+    caller_speaking = False
 
     async def send_exotel_clear():
         """Send Exotel clear frame to purge buffered audio on the phone line."""
@@ -2031,6 +2134,16 @@ async def _websocket_exotel_stream_impl(
         session.add_turn("user", clean_transcript)
         _log_observability("turn_start", session=session, transcript=clean_transcript)
 
+        # Issue 3: opportunistically update extracted_slots as soon as a known
+        # item/service is mentioned, rather than only once the LLM's full
+        # [BOOK_APPOINTMENT: ...] tag fires (which requires every field to
+        # already be gathered). Diff is logged once per turn below regardless
+        # of which code path updates/leaves slots unchanged.
+        slots_before_turn = dict(session.extracted_slots)
+        partial_fields = _extract_partial_slots(clean_transcript, t_config.get("items") or [])
+        if partial_fields:
+            session.update_slots(**partial_fields)
+
         # --- Emergency fast-path (Step 1's highest-priority feature) ---------
         # Checked BEFORE any LLM call so an emergency is never delayed by
         # brain latency. Bypasses booking/LLM entirely on a match.
@@ -2080,6 +2193,7 @@ async def _websocket_exotel_stream_impl(
 
             telephony_bytes_per_sec = settings.EXOTEL_SAMPLE_RATE * settings.EXOTEL_BYTES_PER_SAMPLE
             _log_observability("call_transfer", session=session, total_bytes_sent=total_bytes_sent)
+            _log_slots_diff(session, slots_before_turn)
             await close_websocket_for_emergency_transfer(
                 websocket, connection_id, total_bytes_sent, telephony_bytes_per_sec
             )
@@ -2174,6 +2288,7 @@ async def _websocket_exotel_stream_impl(
         except Exception as e:
             logger.error(f"[EX-{connection_id}] ❌ Turn error: {e}", exc_info=True)
         finally:
+            _log_slots_diff(session, slots_before_turn)
             if not tts_connect_task.done():
                 tts_connect_task.cancel()
                 await asyncio.gather(tts_connect_task, return_exceptions=True)
@@ -2224,25 +2339,54 @@ async def _websocket_exotel_stream_impl(
             speaking_hold_until = time.perf_counter() + 0.5
 
     async def stream_stt_transcripts():
-        """Process STT transcripts from caller with debounced buffering and 5s silence timeout."""
+        """Process STT transcripts from caller with debounced buffering, a
+        full-duplex barge-in path, and an activity-based silence-fallback
+        timeout (fires only after genuine STT inactivity, not on a flat
+        post-turn timer - see last_activity_ts / caller_speaking)."""
         nonlocal pending_brain_task, pending_fallback_task
+        nonlocal is_speaking, last_activity_ts, caller_speaking
 
         _pending_transcript_parts = []
         _debounce_task = None
         DEBOUNCE_SECONDS = 1.0
+        SILENCE_TIMEOUT_SEC = 5.0
+
+        async def silence_fallback():
+            """
+            Re-engage the caller only after SILENCE_TIMEOUT_SEC of genuine STT
+            inactivity. Loops re-checking last_activity_ts AND caller_speaking
+            instead of firing on a single flat sleep: a long single utterance
+            with no interim STT signal between speech_started and its final
+            transcript must never let a stale timer interrupt the caller
+            mid-sentence, no matter how long it takes.
+            """
+            while True:
+                remaining = SILENCE_TIMEOUT_SEC - (time.perf_counter() - last_activity_ts)
+                if remaining <= 0 and not caller_speaking:
+                    break
+                await asyncio.sleep(remaining if remaining > 0 else 0.5)
+            if not is_speaking:
+                logger.info(
+                    f"[EX-{connection_id}] ⏱️ {SILENCE_TIMEOUT_SEC}s of genuine silence detected. Re-engaging caller..."
+                )
+                await process_transcript_to_response(
+                    "Kya aap wahan hain? Kya aapko koi aur madad chahiye?"
+                )
+
+        def _reschedule_silence_fallback():
+            nonlocal pending_fallback_task
+            if pending_fallback_task and not pending_fallback_task.done():
+                pending_fallback_task.cancel()
+            pending_fallback_task = asyncio.create_task(silence_fallback())
 
         async def _debounced_process():
-            nonlocal _pending_transcript_parts, pending_brain_task, pending_fallback_task
+            nonlocal _pending_transcript_parts, pending_brain_task
             await asyncio.sleep(DEBOUNCE_SECONDS)
             if _pending_transcript_parts:
                 full_text = " ".join(_pending_transcript_parts).strip()
                 _pending_transcript_parts = []
 
                 logger.info(f"[EX-{connection_id}] 🧠 Debounced transcript ready: '{full_text}'")
-
-                # Cancel pending silence fallback timer
-                if pending_fallback_task and not pending_fallback_task.done():
-                    pending_fallback_task.cancel()
 
                 # Cancel pending brain task if running
                 if pending_brain_task and not pending_brain_task.done():
@@ -2256,23 +2400,51 @@ async def _websocket_exotel_stream_impl(
                     process_transcript_to_response(full_text)
                 )
 
-                # Schedule 5-second silence check after debounced turn processing
-                async def silence_fallback():
-                    await asyncio.sleep(5.0)
-                    if not is_speaking:
-                        logger.info(f"[EX-{connection_id}] ⏱️ 5.0s silence detected. Re-engaging caller...")
-                        await process_transcript_to_response(
-                            "Kya aap wahan hain? Kya aapko koi aur madad chahiye?"
-                        )
-
-                pending_fallback_task = asyncio.create_task(silence_fallback())
+                # Restart the silence timer now that a turn has been
+                # dispatched for processing.
+                _reschedule_silence_fallback()
 
         try:
             async for event in stt_client.stream_transcripts():
+                if event.event_type == "speech_started":
+                    last_activity_ts = time.perf_counter()
+                    caller_speaking = True
+                    # ANY genuine speech activity resets the silence timer -
+                    # not only completed debounce cycles (Issue 1, fix #3).
+                    _reschedule_silence_fallback()
+
+                    if is_speaking:
+                        # Full-duplex barge-in: caller started speaking while
+                        # the bot's TTS audio is still playing (Issue 5).
+                        logger.info(
+                            f"[EX-{connection_id}] 🔴 Barge-in detected (speech_started while bot speaking)"
+                        )
+                        session.next_utterance_id()
+                        if pending_brain_task and not pending_brain_task.done():
+                            pending_brain_task.cancel()
+                            try:
+                                await pending_brain_task
+                            except asyncio.CancelledError:
+                                pass
+                        await send_exotel_clear()
+                        is_speaking = False
+                    continue
+
+                if event.event_type == "speech_ended":
+                    last_activity_ts = time.perf_counter()
+                    caller_speaking = False
+                    continue
+
                 if event.event_type in ("final_transcript", "transcript_updated"):
                     transcript_text = getattr(event, "transcript", "").strip()
+                    last_activity_ts = time.perf_counter()
+                    caller_speaking = False
 
-                    # Ignore mic input while bot speaks
+                    # Ignore mic input while bot speaks. By the time a
+                    # transcript arrives, a genuine barge-in (speech_started
+                    # above) has already flipped is_speaking to False, so this
+                    # guard only blocks stale/echo-adjacent transcripts, not
+                    # legitimate barge-in speech.
                     if is_speaking or time.perf_counter() < speaking_hold_until:
                         continue
 
@@ -2296,6 +2468,10 @@ async def _websocket_exotel_stream_impl(
     # Initialize STT and Brain
     stt_client = SarvamSaarasSTTClient()
     brain = StreamingBrain(system_prompt=custom_system_prompt)
+    # Prewarm the LLM connection in parallel with the greeting/STT connect so
+    # the first real turn's TLS/connection-pool handshake doesn't add to its
+    # critical-path latency (matches the pattern in websocket_voice_call).
+    asyncio.create_task(brain.prewarm())
 
     stt_connected = await _retry_async(
         lambda: stt_client.connect(language_code=language_code),
@@ -2332,6 +2508,28 @@ async def _websocket_exotel_stream_impl(
                     if event_type == "start" and not greeting_sent:
                         start_data = msg.get("start", {})
                         stream_sid = msg.get("stream_sid") or start_data.get("stream_sid")
+
+                        # Capture the caller's own number from the telephony
+                        # 'start' payload so the booking flow never has to ask
+                        # for it. Exact key wasn't verifiable against a live
+                        # Exotel payload in this pass (no captured log
+                        # available) - falls through common candidates; needs
+                        # confirmation against a real call's logged 'start'
+                        # payload (grep for `"start":`).
+                        caller_phone = (
+                            start_data.get("from")
+                            or start_data.get("call_from")
+                            or start_data.get("caller_id")
+                        )
+                        if caller_phone:
+                            session.set_caller_phone(caller_phone)
+                            logger.info(
+                                f"[EX-{connection_id}] 📱 Caller phone captured: {_mask_phone(caller_phone)}"
+                            )
+                        else:
+                            logger.warning(
+                                f"[EX-{connection_id}] ⚠️ No caller phone found in start payload: {start_data}"
+                            )
 
                         if stream_sid:
                             session.set_call_id(stream_sid)

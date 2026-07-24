@@ -13,13 +13,14 @@ uvicorn), without needing real STT-recognizable audio:
    lifecycle (create on connect, remove on disconnect) is wired correctly.
 
 Run (with the server already running via uvicorn on port 8000):
-  .venv\\Scripts\\python.exe test_step5_ws_smoke.py
+  .venv\\Scripts\\python.exe test_step5_ws_smoke.py [tenant_id]
 """
 
 import asyncio
 import base64
 import json
 import logging
+import sys
 
 import httpx
 import websockets
@@ -27,12 +28,13 @@ import websockets
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-WS_URL = "ws://localhost:8000/ws/v1/exotel-stream/PARLOUR_001"
+TENANT_ID = sys.argv[1] if len(sys.argv) > 1 else "PARLOUR_001"
+WS_URL = f"ws://localhost:8000/ws/v1/exotel-stream/{TENANT_ID}"
 READY_URL = "http://localhost:8000/api/v1/ready"
 
 
 async def get_active_sessions() -> int:
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.get(READY_URL)
         return resp.json()["details"]["active_sessions"]
 

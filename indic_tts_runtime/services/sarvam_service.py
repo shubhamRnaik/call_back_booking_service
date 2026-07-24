@@ -258,6 +258,7 @@ class SarvamWebSocketClient:
 
                 LARGE_CHUNK_THRESHOLD_BYTES = 8000
                 large_chunk_seen = False
+                large_chunk_hash = None
                 startup_hashes = []
                 startup_phase = True
                 MAX_STARTUP_CHUNKS = 6
@@ -308,19 +309,27 @@ class SarvamWebSocketClient:
                                 startup_phase = False
                                 logger.debug(f"[Replay Guard v4] Startup signature captured after {MAX_STARTUP_CHUNKS} chunks")
 
-                        # Guard 0a: full-utterance replay detection via lead-in chunk size.
-                        # If the large lead-in chunk signature shows up again after we've already
-                        # streamed real audio, the buffer has looped back to the start.
+                        # Guard 0a: full-utterance replay detection via lead-in chunk.
+                        # A large (>=8000 byte) chunk is normal for BOTH the very
+                        # first lead-in chunk of an utterance AND a legitimate
+                        # end-of-stream flush chunk later on - size alone is not
+                        # a reliable replay signal. Only treat it as a replay
+                        # when a second large chunk arrives with the SAME
+                        # content hash as a previously-seen large chunk (i.e.
+                        # the buffer actually looped back and is resending the
+                        # same bytes), matching the content-hash pattern Guard
+                        # 0b already uses.
                         if chunk_size >= LARGE_CHUNK_THRESHOLD_BYTES:
-                            if large_chunk_seen:
+                            if large_chunk_seen and chunk_hash == large_chunk_hash:
                                 logger.info(
-                                    "✓ Detected utterance restart (lead-in chunk repeated "
+                                    "✓ Detected utterance restart (lead-in chunk content repeated "
                                     "after %d chunks, size=%d) - stopping stream before replay",
                                     chunks_yielded,
                                     chunk_size,
                                 )
                                 break
                             large_chunk_seen = True
+                            large_chunk_hash = chunk_hash
                         
                         # Guard 0b: detect replay via signature match (content fingerprint).
                         # After startup phase, maintain a 6-chunk rolling window. If it matches

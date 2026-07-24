@@ -7,6 +7,7 @@ import asyncio
 import base64
 import json
 import logging
+import time
 import wave
 import io
 import websockets
@@ -43,15 +44,29 @@ class SarvamSaarasSTTClient:
     SAMPLE_RATE = 16000  # STT expects 16kHz
     VAD_ENABLED = True
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, high_vad_sensitivity: Optional[bool] = None):
         """
         Initialize Sarvam STT client.
 
         Args:
             api_key: Sarvam API key (default: from settings)
+            high_vad_sensitivity: Override for Sarvam's VAD sensitivity query
+                param. Defaults to settings.stt_high_vad_sensitivity (env-tunable)
+                rather than being hardcoded - a too-sensitive VAD chops single
+                long utterances into fragments.
         """
         self.api_key = api_key or settings.sarvam_api_key
         self.sample_rate = self.SAMPLE_RATE
+        self.high_vad_sensitivity = (
+            settings.stt_high_vad_sensitivity
+            if high_vad_sensitivity is None
+            else high_vad_sensitivity
+        )
+
+        # Tracks the timestamp of the last speech_ended signal so the gap to
+        # the next speech_started can be logged (makes VAD fragment-splitting
+        # visible in logs without guessing - see _parse_stt_message).
+        self._last_speech_ended_at: Optional[float] = None
 
         # Connection state
         self._connected = False
@@ -87,17 +102,29 @@ class SarvamSaarasSTTClient:
 
         logger.info(f"Sarvam STT client initialized with endpoint: {self.WS_ENDPOINT}")
 
-    async def connect(self, language_code: str = "hi-IN") -> bool:
+    async def connect(
+        self,
+        language_code: str = "hi-IN",
+        high_vad_sensitivity: Optional[bool] = None,
+    ) -> bool:
         """
         Establish WebSocket connection to Sarvam STT service.
 
         Args:
             language_code: Target BCP-47 language code (default: "hi-IN")
+            high_vad_sensitivity: Optional per-call override; falls back to
+                self.high_vad_sensitivity (constructor/settings default) when
+                not given.
 
         Returns:
             True if connected successfully, False otherwise
         """
         try:
+            effective_high_vad = (
+                self.high_vad_sensitivity
+                if high_vad_sensitivity is None
+                else high_vad_sensitivity
+            )
             url = (
                 f"{self.WS_ENDPOINT}?"
                 f"model={self.MODEL}&"
@@ -105,7 +132,7 @@ class SarvamSaarasSTTClient:
                 f"language_code={language_code}&"
                 f"sample_rate={self.SAMPLE_RATE}&"
                 f"vad_signals={'true' if self.VAD_ENABLED else 'false'}&"
-                f"high_vad_sensitivity=true"
+                f"high_vad_sensitivity={'true' if effective_high_vad else 'false'}"
             )
 
             logger.info(f"Connecting to Sarvam STT: {url}")
@@ -288,9 +315,17 @@ class SarvamSaarasSTTClient:
             if msg_type == "events":
                 signal = data.get("signal_type")
                 if signal == "START_SPEECH":
+                    if self._last_speech_ended_at is not None:
+                        gap_ms = (time.monotonic() - self._last_speech_ended_at) * 1000
+                        logger.info(
+                            "🎙️ Sarvam STT: fragment gap %.0fms since last speech_ended "
+                            "(small gaps may indicate VAD splitting one utterance)",
+                            gap_ms,
+                        )
                     logger.info("🎙️ Sarvam STT: Speech started signal detected")
                     return STTEvent(event_type="speech_started")
                 if signal == "END_SPEECH":
+                    self._last_speech_ended_at = time.monotonic()
                     logger.info("🎙️ Sarvam STT: Speech ended signal detected")
                     return STTEvent(event_type="speech_ended")
                 return None

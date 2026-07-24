@@ -58,6 +58,11 @@ class CallSession:
         self.chat_history: list[dict[str, Any]] = []
         self.current_utterance_id: int = 0
         self.extracted_slots: dict[str, Any] = {}
+        # Caller's own phone number, captured from the telephony 'start' event
+        # payload (see _websocket_exotel_stream_impl in main.py). Used to
+        # auto-fill the booking flow's phone field so the caller is never
+        # asked for a number they're already calling from.
+        self.caller_phone: Optional[str] = None
 
         # Monotonic counter used to build idempotency_key = f"{call_id}:{n}"
         # for booking attempts (see services/supabase_service.py).
@@ -69,6 +74,13 @@ class CallSession:
         connect)."""
         if call_id:
             self.call_id = call_id
+
+    def set_caller_phone(self, phone: str) -> None:
+        """Store the caller's own phone number captured from the telephony
+        'start' event, once, so booking flows can reuse it instead of
+        asking the caller to repeat their number."""
+        if phone:
+            self.caller_phone = phone
 
     def add_turn(self, role: str, text: str) -> None:
         """Append a turn to the rolling chat history (role: 'user' | 'assistant')."""

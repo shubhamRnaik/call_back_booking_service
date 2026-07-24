@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     packet_duration_ms: int = Field(default=40, env="PACKET_DURATION_MS")
     stt_sample_rate: int = Field(default=16000, env="STT_SAMPLE_RATE")
     tts_sample_rate: int = Field(default=22050, env="TTS_SAMPLE_RATE")
+    # Sarvam STT VAD sensitivity. Default False: `true` was previously
+    # hardcoded and caused single long utterances to be chopped into
+    # fragments by an overly-sensitive voice-activity detector. Tunable via
+    # env var without a code change (see services/stt_service.py connect()).
+    stt_high_vad_sensitivity: bool = Field(
+        default=False, env="STT_HIGH_VAD_SENSITIVITY"
+    )
     default_language_code: str = Field(
         default="hi-IN", env="DEFAULT_LANGUAGE_CODE"
     )
@@ -68,6 +75,28 @@ class Settings(BaseSettings):
     service_api_key: Optional[str] = Field(default=None, env="SERVICE_API_KEY")
     rest_rate_limit_per_min: int = Field(default=120, env="REST_RATE_LIMIT_PER_MIN")
     ws_connect_rate_limit_per_min: int = Field(default=30, env="WS_CONNECT_RATE_LIMIT_PER_MIN")
+
+    # Comma-separated list of allowed browser origins for CORS (e.g.
+    # "https://app.example.com,https://admin.example.com"). Defaults to "*"
+    # for local/dev convenience, but the CORS middleware setup in main.py
+    # forces allow_credentials=False whenever this is "*" (browsers reject
+    # wildcard-origin + credentials anyway; this just makes the safe
+    # behavior explicit instead of relying on browser enforcement alone).
+    # Set an explicit origin list in production.
+    cors_allowed_origins: str = Field(default="*", env="CORS_ALLOWED_ORIGINS")
+
+    # Dev-only static file mounts (e.g. /tests) are OFF by default so test
+    # fixtures/scripts are never served publicly in production. Opt in
+    # locally with EXPOSE_DEV_STATIC_ROUTES=true.
+    expose_dev_static_routes: bool = Field(default=False, env="EXPOSE_DEV_STATIC_ROUTES")
+
+    # Optional shared-secret query token for the Exotel telephony WebSocket
+    # endpoints (/ws/v1/exotel-stream[/{tenant_id}]). Exotel's Voicebot Applet
+    # can't send custom headers, so auth here is a `?token=...` query param
+    # configured in the Exotel dashboard URL. Left unset by default for
+    # backward compatibility with existing local/test setups; set it in
+    # production to prevent unauthenticated callers from reaching the bot.
+    exotel_ws_token: Optional[str] = Field(default=None, env="EXOTEL_WS_SHARED_TOKEN")
 
     # WebSocket Session Limits
     max_ws_connections_total: int = Field(default=200, env="MAX_WS_CONNECTIONS_TOTAL")
