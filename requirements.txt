@@ -15,3 +15,7 @@ pytest-cov
 google-genai
 openai
 numpy
+supabase
+python-dateutil
+aiosqlite
+tzdata; sys_platform == "win32"

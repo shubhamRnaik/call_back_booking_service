@@ -83,6 +83,41 @@ class Settings(BaseSettings):
     # LLM timeout tuning
     llm_api_timeout_sec: float = Field(default=12.0, env="LLM_API_TIMEOUT_SEC")
 
+    # Supabase Configuration (multi-tenant booking backend)
+    supabase_url: str = Field(..., env="SUPABASE_URL")
+    supabase_key: str = Field(..., env="SUPABASE_KEY")
+    # Anon key kept for reference only - backend uses the service_role key
+    # (supabase_key) above since this is trusted server-side code bypassing RLS.
+    supabase_anon_key: Optional[str] = Field(default=None, env="SUPABASE_ANON_KEY")
+
+    # Telephony Specs (Exotel Cloud Telephony - authoritative constants)
+    # NOTE: these duplicate/formalize values already used ad-hoc in main.py
+    # (1280-byte/80ms chunks, 0.075s pacing, 3200-byte/100ms STT buffer).
+    # Do not change these without re-validating against telephony_audio.py.
+    EXOTEL_SAMPLE_RATE: int = 8000
+    EXOTEL_BYTES_PER_SAMPLE: int = 2
+    EXOTEL_CHUNK_80MS_BYTES: int = 1280
+    EXOTEL_PACING_SLEEP_SEC: float = 0.075
+
+    STT_SAMPLE_RATE_HZ: int = 16000
+    STT_BUFFER_100MS_BYTES: int = 3200
+
+    TTS_SAMPLE_RATE_HZ: int = 22050
+    TTS_BYTES_PER_SECOND: int = 44100  # 22050 Hz * 16-bit (2 bytes) mono
+
+    # Secondary providers (fallback) - DEFERRED.
+    # These are config stubs only; no fallback client/logic is wired up yet
+    # (explicit decision - see /memories/session plan). Do not assume these
+    # are active just because the fields exist.
+    deepgram_api_key: Optional[str] = Field(default=None, env="DEEPGRAM_API_KEY")
+    elevenlabs_api_key: Optional[str] = Field(default=None, env="ELEVENLABS_API_KEY")
+    exotel_api_key: Optional[str] = Field(default=None, env="EXOTEL_API_KEY")
+    exotel_api_token: Optional[str] = Field(default=None, env="EXOTEL_API_TOKEN")
+    exotel_account_sid: Optional[str] = Field(default=None, env="EXOTEL_ACCOUNT_SID")
+
+    # Tenant cache
+    tenant_cache_ttl_sec: int = Field(default=300, env="TENANT_CACHE_TTL_SEC")
+
     class Config:
         env_file = ".env"
         case_sensitive = False
@@ -138,6 +173,22 @@ class Settings(BaseSettings):
                 f"Target TTFB must be between 50ms and 1000ms, got {v}ms"
             )
         return v
+
+    @validator("supabase_url")
+    def validate_supabase_url(cls, v: str) -> str:
+        """Fail loudly rather than silently defaulting to an empty/invalid URL."""
+        if not v or not v.strip():
+            raise ValueError("SUPABASE_URL must be set and non-empty")
+        if not v.startswith("https://"):
+            raise ValueError(f"SUPABASE_URL must be an https:// URL, got: {v}")
+        return v.strip()
+
+    @validator("supabase_key")
+    def validate_supabase_key(cls, v: str) -> str:
+        """Fail loudly rather than silently defaulting to an empty/invalid key."""
+        if not v or not v.strip():
+            raise ValueError("SUPABASE_KEY must be set and non-empty")
+        return v.strip()
 
     @validator("stt_sample_rate")
     def validate_stt_sample_rate(cls, v: int) -> int:

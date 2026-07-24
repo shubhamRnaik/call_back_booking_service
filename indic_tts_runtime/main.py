@@ -34,6 +34,16 @@ from .core.scheduler import PacketScheduler
 from .normalizer import MultilingualTextNormalizer
 from .chunker import StreamTextChunker
 from .core.telephony_audio import telephony_to_stt_pcm, tts_pcm_to_telephony
+from .services.supabase_service import SupabaseService
+from .core.session import session_manager, CallSession
+from .core.emergency import (
+    check_emergency_fastpath,
+    find_emergency_match,
+    build_emergency_handover_phrase,
+    compute_playback_drain_seconds,
+    close_websocket_for_emergency_transfer,
+)
+from .core.datetime_utils import parse_user_datetime
 
 # Configure logging
 logging.basicConfig(
@@ -41,6 +51,23 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+# Dedicated logger for structured JSON per-turn observability records (Step 5).
+# Kept separate from the human-readable emoji logs above so both can coexist -
+# tooling can grep/parse this logger's output without regex-stripping emojis.
+obs_logger = logging.getLogger("indic_tts_runtime.observability")
+
+
+def _log_observability(event: str, session: Optional[CallSession] = None, **extra: Any) -> None:
+    """Emit a single structured JSON log line for a call-lifecycle event."""
+    try:
+        payload = {"event": event}
+        if session is not None:
+            payload.update(session.to_observability_dict())
+        payload.update(extra)
+        obs_logger.info(json.dumps(payload, default=str))
+    except Exception as exc:
+        logger.debug(f"Observability logging failed for event={event}: {exc}")
+
 
 # Global service instances
 cache_service: Optional[CacheService] = None
@@ -49,6 +76,7 @@ voice_router: Optional[VoiceRouter] = None
 packet_scheduler: Optional[PacketScheduler] = None
 text_normalizer: Optional[MultilingualTextNormalizer] = None
 text_chunker: Optional[StreamTextChunker] = None
+supabase_service: Optional[SupabaseService] = None
 
 # Metrics tracking
 start_time = datetime.now()
@@ -242,6 +270,17 @@ async def _probe_llm_service() -> tuple[bool, str]:
         return False, str(exc)
 
 
+async def _probe_supabase_service() -> tuple[bool, str]:
+    """Run a lightweight Supabase connectivity probe (multi-tenant backend)."""
+    if not supabase_service:
+        return False, "not_initialized"
+    try:
+        return await supabase_service.check_connectivity()
+    except Exception as exc:
+        logger.warning(f"Supabase probe failed: {exc}")
+        return False, str(exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -251,7 +290,7 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("=== WebSocket TTS Engine Startup ===")
     
-    global cache_service, sarvam_ws_client, voice_router, packet_scheduler, text_normalizer, text_chunker
+    global cache_service, sarvam_ws_client, voice_router, packet_scheduler, text_normalizer, text_chunker, supabase_service
     
     try:
         # Initialize cache service
@@ -284,6 +323,22 @@ async def lifespan(app: FastAPI):
         # Initialize streaming text chunker
         text_chunker = StreamTextChunker(min_word_threshold=5, max_word_threshold=7)
         logger.info("✓ Streaming Text Chunker initialized")
+
+        # Initialize Supabase service (multi-tenant booking backend).
+        # NOT fail-fast by design: a transient Supabase outage should not
+        # prevent the whole app (including tenants servable via the
+        # hardcoded fallback config) from starting. The probe result is
+        # logged loudly here AND exposed via /api/v1/ready for ops visibility.
+        supabase_service = SupabaseService()
+        supabase_ok, supabase_msg = await supabase_service.check_connectivity()
+        if supabase_ok:
+            logger.info("✓ Supabase Service initialized and reachable")
+        else:
+            logger.error(
+                f"✗ Supabase Service initialized but UNREACHABLE at startup: "
+                f"{supabase_msg}. Multi-tenant lookups will fall back to "
+                f"hardcoded tenant configs where available."
+            )
         
         logger.info("=== All services initialized successfully ===\n")
         
@@ -299,6 +354,9 @@ async def lifespan(app: FastAPI):
         if sarvam_ws_client:
             await sarvam_ws_client.disconnect()
             logger.info("✓ Sarvam WebSocket Client closed")
+        if supabase_service:
+            await supabase_service.close()
+            logger.info("✓ Supabase Service closed")
         logger.info("=== Shutdown complete ===")
     except Exception as e:
         logger.error(f"✗ Shutdown error: {e}")
@@ -1460,51 +1518,16 @@ async def websocket_voice_call(websocket: WebSocket):
         logger.info(f"[VC-{connection_id}] ✓ Voice call ended (duration: {(time.perf_counter() - call_start_time):.2f}s)")
 
 
-@app.websocket("/ws/v1/exotel-stream")
-async def websocket_exotel_stream(
-    websocket: WebSocket,
-    tenant_id: str = "default",
-):
-    """
-    Production Exotel Cloud Telephony WebSocket endpoint.
-    Includes:
-    - 320-byte trailing chunk padding (eliminates tail clicks/gaps).
-    - 3-second rolling window transcript deduplication.
-    - 5-second silence fallback prompt task.
-    """
-    connection_id = str(uuid.uuid4())[:13]
-    client_ip = _client_ip_from_websocket(websocket)
-    connection_registered = False
-    logger.info(f"[EX-{connection_id}] 📞 Exotel connection requested for tenant_id='{tenant_id}'")
+# ---------------------------------------------------------------------------
+# Multi-tenant configuration (Step 5): Supabase-backed with hardcoded fallback
+# ---------------------------------------------------------------------------
 
-    if not _allow_rate_limit(
-        _rate_limit_state["ws_connect"][client_ip],
-        settings.ws_connect_rate_limit_per_min,
-        window_sec=60.0,
-    ):
-        request_metrics["ws_rejected"] += 1
-        await websocket.close(code=4408, reason="WS connect rate limit exceeded")
-        return
-
-    connection_registered = await _try_register_ws_connection(client_ip)
-    if not connection_registered:
-        request_metrics["ws_rejected"] += 1
-        await websocket.close(code=4429, reason="WS connection limit reached")
-        return
-
-    try:
-        if text_normalizer is None:
-            await websocket.close(code=1011, reason="Service not initialized")
-            return
-
-        await websocket.accept()
-        logger.info(f"[EX-{connection_id}] ✅ Accepted")
-    except Exception as e:
-        logger.error(f"[EX-{connection_id}] ❌ Accept failed: {e}")
-        return
-
-    # Tenant configuration
-    tenant_configs = {
+# Fallback tenant configs used ONLY when Supabase is unreachable or the
+# tenant_id isn't found there (e.g. local/demo tenants never migrated into
+# the DB). Hoisted to module level - was previously rebuilt on every single
+# connection inside the handler; no functional change, just avoids rebuilding
+# a static dict per call.
+_FALLBACK_TENANT_CONFIGS: dict = {
         "default": {
             "business_name": "Glow & Shine Beauty Parlour",
             "language": "en-IN",
@@ -1544,13 +1567,362 @@ async def websocket_exotel_stream(
                 "Answer customer queries politely and concisely in 1-2 sentences in Hindi or English."
             ),
         },
+}
+
+
+_BOOKING_TAG_RE = re.compile(
+    r"\[BOOK_APPOINTMENT:\s*(.*?)\]", re.IGNORECASE | re.DOTALL
+)
+
+
+def _build_catalogue_prompt_section(items: list) -> str:
+    """Render a tenant's doctors/services list into a prompt-friendly block."""
+    if not items:
+        return "No services/doctors are currently configured for this business."
+    lines = []
+    for item in items:
+        name = item.get("name", "Unknown")
+        category = item.get("category", "")
+        price = item.get("price_str", "")
+        hours = item.get("working_hours", "")
+        status = item.get("status", "AVAILABLE")
+        line = f"- {name}"
+        if category:
+            line += f" ({category})"
+        if price:
+            line += f", {price}"
+        if hours:
+            line += f", available {hours}"
+        if status and status != "AVAILABLE":
+            line += f" [{status}]"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _build_supabase_system_prompt(tenant_row: dict, items: list) -> str:
+    """Compose a booking-aware system prompt from live Supabase tenant/catalogue data."""
+    business_name = tenant_row.get("business_name", "our business")
+    base_persona = tenant_row.get("system_prompt") or (
+        f"You are the polite AI phone receptionist for {business_name}."
+    )
+    catalogue = _build_catalogue_prompt_section(items)
+
+    return (
+        f"{base_persona}\n\n"
+        "### STRICT VOICE RESPONSE RULES:\n"
+        "1. NO MARKDOWN OR FORMATTING: never use bold, bullet points, emojis, "
+        "or special characters. Plain spoken text only.\n"
+        "2. CONCISE BREVITY: keep every reply under 2 short natural sentences "
+        "(max 25 words).\n"
+        "3. ONE QUESTION AT A TIME.\n"
+        "4. DYNAMIC LANGUAGE MATCHING: reply in the caller's language/style; "
+        "never prefix replies with language tags.\n"
+        "5. NUMBERS AND PRICING: say numbers/prices in plain words or digits, "
+        "no currency symbols.\n\n"
+        "### AVAILABLE DOCTORS/SERVICES:\n"
+        f"{catalogue}\n\n"
+        "### APPOINTMENT BOOKING FLOW:\n"
+        "- Ask which doctor/service the caller wants (match against the list above).\n"
+        "- Ask their preferred date and time.\n"
+        "- Ask their full name.\n"
+        "- Ask their phone number for confirmation.\n"
+        "- Once you have ALL FOUR of these (service, date/time, name, phone), "
+        "respond with ONLY this exact machine-readable tag and nothing else "
+        "(no extra sentence, no punctuation outside it): "
+        "[BOOK_APPOINTMENT: item=<service/doctor name>|when=<date and time as "
+        "the caller said it>|name=<caller's full name>|phone=<caller's phone "
+        "number>]\n"
+        "- Do NOT say anything else in that turn - the system will speak the "
+        "confirmation for you.\n"
+        "- If the caller says goodbye/thank you and no booking is in "
+        "progress, give a warm closing remark and append '[END_CALL]' at the "
+        "end.\n\n"
+        "### OUT OF SCOPE:\n"
+        f"- If asked about anything unrelated to {business_name}'s services, "
+        "politely redirect to booking.\n"
+    )
+
+
+async def _resolve_tenant_config(tenant_id: str) -> dict:
+    """
+    Resolve a tenant's runtime config, preferring live Supabase data with a
+    hardcoded fallback. Returned dict always has: business_name, language,
+    speaker, system_prompt, tenant_row (dict or None), items (list),
+    emergency_number (str or None), timezone (str), source ("supabase" |
+    "fallback_hardcoded").
+    """
+    if supabase_service is not None:
+        try:
+            data = await supabase_service.get_tenant_and_items(tenant_id)
+        except Exception as exc:
+            logger.error(
+                f"Supabase tenant lookup failed for '{tenant_id}': {exc}. "
+                f"Falling back to hardcoded config."
+            )
+            data = None
+
+        if data:
+            tenant_row = data["tenant"]
+            items = data["items"]
+            return {
+                "business_name": tenant_row.get("business_name", tenant_id),
+                # NOTE: the `tenants` table has no language/speaker columns
+                # yet - default to hi-IN/shubh for all Supabase-backed
+                # tenants. Add columns later if per-tenant language
+                # selection becomes a requirement.
+                "language": "hi-IN",
+                "speaker": "shubh",
+                "system_prompt": _build_supabase_system_prompt(tenant_row, items),
+                "tenant_row": tenant_row,
+                "items": items,
+                "emergency_number": tenant_row.get("emergency_number"),
+                "timezone": tenant_row.get("timezone", "Asia/Kolkata"),
+                "source": "supabase",
+            }
+
+    fallback = _FALLBACK_TENANT_CONFIGS.get(
+        tenant_id, _FALLBACK_TENANT_CONFIGS["default"]
+    )
+    logger.warning(
+        f"Tenant '{tenant_id}' not found in Supabase (or Supabase "
+        f"unreachable) - using hardcoded fallback config."
+    )
+    return {
+        **fallback,
+        "tenant_row": None,
+        "items": [],
+        "emergency_number": None,
+        "timezone": "Asia/Kolkata",
+        "source": "fallback_hardcoded",
     }
 
-    t_config = tenant_configs.get(tenant_id, tenant_configs["default"])
+
+def _parse_booking_tag_fields(tag_body: str) -> dict:
+    """Parse 'item=...|when=...|name=...|phone=...' into a dict; missing keys omitted."""
+    fields = {}
+    for part in tag_body.split("|"):
+        if "=" not in part:
+            continue
+        key, _, value = part.partition("=")
+        key = key.strip().lower()
+        value = value.strip()
+        if key and value:
+            fields[key] = value
+    return fields
+
+
+_BOOKING_LOCALIZED_STRINGS = {
+    "need_service": {
+        "hi-IN": "Maaf kijiye, kripya bataiye aap kis doctor ya service ke liye booking karna chahte hain.",
+        "en-IN": "Sorry, could you tell me which doctor or service you'd like to book?",
+    },
+    "need_datetime": {
+        "hi-IN": "Maaf kijiye, kripya apni pasandeeda date aur time dobara bataiye.",
+        "en-IN": "Sorry, could you repeat your preferred date and time?",
+    },
+    "slot_taken": {
+        "hi-IN": "Yeh samay pehle se book hai. Kripya koi doosra samay bataiye.",
+        "en-IN": "That time slot is already booked. Could you suggest another time?",
+    },
+    "booking_error": {
+        "hi-IN": "Abhi booking system mein dikkat aa rahi hai. Kripya thodi der baad dobara call karein.",
+        "en-IN": "We're having trouble with our booking system right now. Please try calling again shortly.",
+    },
+}
+
+
+def _localized(key: str, language_code: str) -> str:
+    variants = _BOOKING_LOCALIZED_STRINGS.get(key, {})
+    return variants.get(language_code, variants.get("hi-IN", ""))
+
+
+async def _process_booking_tag(
+    tag_body: str,
+    session: CallSession,
+    tenant_config: dict,
+    language_code: str,
+) -> str:
+    """
+    Parse and execute a [BOOK_APPOINTMENT: ...] tag emitted by the LLM.
+
+    Returns the DETERMINISTIC text to speak back to the caller - i.e. the
+    actual database outcome, never the LLM's own (unverified) claim of
+    success. This is a hard correctness rule: the caller must never be told
+    "confirmed" unless the DB insert actually succeeded.
+    """
+    fields = _parse_booking_tag_fields(tag_body)
+    session.update_slots(**fields)  # observability, regardless of outcome
+
+    item_name_wanted = fields.get("item")
+    when_phrase = fields.get("when")
+    patient_name = fields.get("name")
+    patient_phone = fields.get("phone")
+
+    items = tenant_config.get("items") or []
+    tenant_id = session.tenant_id
+
+    if not item_name_wanted or not items:
+        return _localized("need_service", language_code)
+
+    matched_item = None
+    wanted_lower = item_name_wanted.strip().lower()
+    for item in items:
+        if wanted_lower in (item.get("name", "") or "").lower():
+            matched_item = item
+            break
+    if matched_item is None:
+        return _localized("need_service", language_code)
+
+    if not when_phrase:
+        return _localized("need_datetime", language_code)
+
+    tenant_tz = tenant_config.get("timezone") or "Asia/Kolkata"
+    parsed = parse_user_datetime(when_phrase, tenant_tz=tenant_tz)
+    if parsed is None:
+        return _localized("need_datetime", language_code)
+
+    date_str, start_mins, _default_end_mins, display_time_str = parsed
+    slot_duration = matched_item.get("slot_duration_mins") or 30
+    end_mins = start_mins + int(slot_duration)
+
+    if supabase_service is None:
+        logger.error(f"[{tenant_id}] Booking attempted but supabase_service is None")
+        return _localized("booking_error", language_code)
+
+    try:
+        available, _reason = await supabase_service.check_slot_available(
+            tenant_id=tenant_id,
+            item_name=matched_item["name"],
+            date_str=date_str,
+            proposed_start_mins=start_mins,
+            proposed_end_mins=end_mins,
+        )
+        if not available:
+            return _localized("slot_taken", language_code)
+
+        result = await supabase_service.create_appointment_async(
+            tenant_id=tenant_id,
+            item_name=matched_item["name"],
+            item_id=matched_item.get("id"),
+            date_str=date_str,
+            start_mins=start_mins,
+            end_mins=end_mins,
+            display_time_str=display_time_str,
+            patient_name=patient_name or "Caller",
+            patient_phone=patient_phone or "",
+            call_id=session.call_id,
+            attempt_nonce=session.next_attempt_nonce(),
+        )
+        status = result.get("status")
+
+        _log_observability(
+            "booking_attempt",
+            session=session,
+            item=matched_item["name"],
+            date_str=date_str,
+            start_mins=start_mins,
+            status=status,
+        )
+
+        if status in ("CONFIRMED", "DUPLICATE_RETRY_IGNORED"):
+            session.reset_slots()
+            if language_code == "en-IN":
+                return (
+                    f"Great, your appointment for {matched_item['name']} on "
+                    f"{date_str} at {display_time_str} is confirmed."
+                )
+            return (
+                f"Aapki {matched_item['name']} ke saath booking {date_str} ko "
+                f"{display_time_str} baje confirm ho gayi hai."
+            )
+        if status == "ALREADY_BOOKED":
+            return _localized("slot_taken", language_code)
+
+        logger.error(f"[{tenant_id}] Unexpected booking status: {status}")
+        return _localized("booking_error", language_code)
+
+    except Exception as exc:
+        logger.error(f"[{tenant_id}] Booking flow error: {exc}", exc_info=True)
+        return _localized("booking_error", language_code)
+
+
+@app.websocket("/ws/v1/exotel-stream")
+async def websocket_exotel_stream_query_route(
+    websocket: WebSocket,
+    tenant_id: str = "default",
+):
+    """Exotel entrypoint using ?tenant_id=... query param (backward-compatible)."""
+    await _websocket_exotel_stream_impl(websocket, tenant_id)
+
+
+@app.websocket("/ws/v1/exotel-stream/{tenant_id}")
+async def websocket_exotel_stream_path_route(
+    websocket: WebSocket,
+    tenant_id: str,
+):
+    """Exotel entrypoint using a /exotel-stream/{tenant_id} path param."""
+    await _websocket_exotel_stream_impl(websocket, tenant_id)
+
+
+async def _websocket_exotel_stream_impl(
+    websocket: WebSocket,
+    tenant_id: str = "default",
+):
+    """
+    Production Exotel Cloud Telephony WebSocket endpoint.
+    Includes:
+    - 320-byte trailing chunk padding (eliminates tail clicks/gaps).
+    - 3-second rolling window transcript deduplication.
+    - 5-second silence fallback prompt task.
+    - Multi-tenant Supabase-backed config (Step 5), with hardcoded fallback.
+    - Emergency fast-path detection + Exotel Applet Exit Path transfer.
+    - LLM-driven appointment booking via the [BOOK_APPOINTMENT: ...] tag.
+    """
+    connection_id = str(uuid.uuid4())[:13]
+    client_ip = _client_ip_from_websocket(websocket)
+    connection_registered = False
+    logger.info(f"[EX-{connection_id}] 📞 Exotel connection requested for tenant_id='{tenant_id}'")
+
+    if not _allow_rate_limit(
+        _rate_limit_state["ws_connect"][client_ip],
+        settings.ws_connect_rate_limit_per_min,
+        window_sec=60.0,
+    ):
+        request_metrics["ws_rejected"] += 1
+        await websocket.close(code=4408, reason="WS connect rate limit exceeded")
+        return
+
+    connection_registered = await _try_register_ws_connection(client_ip)
+    if not connection_registered:
+        request_metrics["ws_rejected"] += 1
+        await websocket.close(code=4429, reason="WS connection limit reached")
+        return
+
+    try:
+        if text_normalizer is None:
+            await websocket.close(code=1011, reason="Service not initialized")
+            return
+
+        await websocket.accept()
+        logger.info(f"[EX-{connection_id}] ✅ Accepted")
+    except Exception as e:
+        logger.error(f"[EX-{connection_id}] ❌ Accept failed: {e}")
+        return
+
+    # Multi-tenant config: Supabase-backed with hardcoded fallback (Step 5).
+    t_config = await _resolve_tenant_config(tenant_id)
     business_name = t_config["business_name"]
     language_code = t_config["language"]
     speaker = t_config["speaker"]
     custom_system_prompt = t_config["system_prompt"]
+    logger.info(
+        f"[EX-{connection_id}] 🏢 Tenant config resolved: tenant_id='{tenant_id}' "
+        f"source={t_config['source']} business='{business_name}'"
+    )
+
+    # Central in-memory session record for this call (Step 3/5 wiring).
+    session = session_manager.create(connection_id, tenant_id)
+    _log_observability("call_connected", session=session, tenant_source=t_config["source"])
 
     stream_sid = None
     stt_client = None
@@ -1563,7 +1935,6 @@ async def websocket_exotel_stream(
     greeting_task = None
     greeting_sent = False
 
-    current_utterance_id = 0
     last_processed_transcript = ""
     last_transcript_time = 0.0
 
@@ -1578,15 +1949,19 @@ async def websocket_exotel_stream(
         except Exception as e:
             logger.warning(f"[EX-{connection_id}] Clear frame failed: {e}")
 
-    async def send_exotel_media_paced(pcm_24k_bytes: bytes, utterance_id: int):
+    async def send_exotel_media_paced(pcm_24k_bytes: bytes, utterance_id: int) -> int:
         """
         Streams 16-bit PCM to Exotel in 1280-byte (80ms) chunks.
         Pads trailing chunks smaller than 320 bytes to prevent audio tail gaps.
+        Returns the number of raw telephony-rate bytes actually written (used
+        for exact byte-count playback-drain calculations - see
+        core/emergency.py's compute_playback_drain_seconds()).
         """
         nonlocal stream_sid, is_speaking
         if not stream_sid or not pcm_24k_bytes:
-            return
+            return 0
 
+        bytes_written = 0
         try:
             b64_payload = tts_pcm_to_telephony(
                 pcm_bytes=pcm_24k_bytes,
@@ -1595,7 +1970,7 @@ async def websocket_exotel_stream(
                 target_sr=8000,
             )
             if not b64_payload:
-                return
+                return 0
 
             raw_bytes = base64.b64decode(b64_payload)
             chunk_size = 1280  # 80ms at 8kHz 16-bit PCM
@@ -1613,7 +1988,7 @@ async def websocket_exotel_stream(
             logger.info(f"[EX-{connection_id}] 📤 Streaming {len(raw_bytes)}B ({total_chunks} chunks)...")
 
             for i in range(0, len(raw_bytes), chunk_size):
-                if not is_speaking or utterance_id != current_utterance_id:
+                if not is_speaking or not session.is_current_utterance(utterance_id):
                     logger.info(f"[EX-{connection_id}] 🛑 Audio streaming interrupted")
                     break
 
@@ -1625,14 +2000,17 @@ async def websocket_exotel_stream(
                     "stream_sid": stream_sid,
                     "media": {"payload": b64_chunk},
                 })
+                bytes_written += len(chunk)
                 await asyncio.sleep(0.075)
 
         except Exception as e:
             logger.warning(f"[EX-{connection_id}] Media stream error: {e}")
 
+        return bytes_written
+
     async def process_transcript_to_response(transcript: str):
         """Full-duplex response engine."""
-        nonlocal is_speaking, speaking_hold_until, current_utterance_id
+        nonlocal is_speaking, speaking_hold_until
         nonlocal last_processed_transcript, last_transcript_time
 
         clean_transcript = transcript.strip()
@@ -1647,10 +2025,65 @@ async def websocket_exotel_stream(
 
         last_processed_transcript = clean_transcript
         last_transcript_time = now
-        current_utterance_id += 1
-        this_utterance_id = current_utterance_id
+        this_utterance_id = session.next_utterance_id()
 
         logger.info(f"[EX-{connection_id}] 📥 CALLER SAID: '{clean_transcript}'")
+        session.add_turn("user", clean_transcript)
+        _log_observability("turn_start", session=session, transcript=clean_transcript)
+
+        # --- Emergency fast-path (Step 1's highest-priority feature) ---------
+        # Checked BEFORE any LLM call so an emergency is never delayed by
+        # brain latency. Bypasses booking/LLM entirely on a match.
+        if check_emergency_fastpath(clean_transcript):
+            matched_kw = find_emergency_match(clean_transcript)
+            logger.warning(
+                f"[EX-{connection_id}] 🚨 EMERGENCY detected (matched: '{matched_kw}'): '{clean_transcript}'"
+            )
+            _log_observability("emergency_detected", session=session, matched=matched_kw)
+
+            handover_text = build_emergency_handover_phrase(t_config.get("tenant_row"))
+            session.add_turn("assistant", handover_text)
+
+            emergency_tts = SarvamWebSocketClient()
+            total_bytes_sent = 0
+            try:
+                connected = await _retry_async(
+                    lambda: emergency_tts.connect(
+                        target_language_code=language_code,
+                        speaker=speaker,
+                        pace=0.95,
+                    ),
+                    "tts_connect_exotel_emergency",
+                )
+                if connected:
+                    is_speaking = True
+                    norm_text = text_normalizer.normalize(
+                        handover_text, target_language_code=language_code
+                    )
+                    if await emergency_tts.send_text_chunk(norm_text):
+                        await emergency_tts.send_flush()
+                        async for chunk in emergency_tts.stream_audio_chunks(
+                            initial_timeout_sec=2.5,
+                            post_audio_idle_timeout_sec=0.4,
+                            max_duration_sec=10.0,
+                        ):
+                            total_bytes_sent += await send_exotel_media_paced(chunk, this_utterance_id)
+            except Exception as exc:
+                logger.error(f"[EX-{connection_id}] ❌ Emergency handover TTS failed: {exc}", exc_info=True)
+            finally:
+                try:
+                    await emergency_tts.disconnect()
+                except Exception:
+                    pass
+                is_speaking = False
+                speaking_hold_until = time.perf_counter() + 0.5
+
+            telephony_bytes_per_sec = settings.EXOTEL_SAMPLE_RATE * settings.EXOTEL_BYTES_PER_SAMPLE
+            _log_observability("call_transfer", session=session, total_bytes_sent=total_bytes_sent)
+            await close_websocket_for_emergency_transfer(
+                websocket, connection_id, total_bytes_sent, telephony_bytes_per_sec
+            )
+            return
 
         turn_tts = SarvamWebSocketClient()
         tts_connect_task = asyncio.create_task(
@@ -1663,6 +2096,7 @@ async def websocket_exotel_stream(
                 "tts_connect_exotel",
             )
         )
+        total_bytes_sent = 0
 
         try:
             brain_start = time.perf_counter()
@@ -1671,7 +2105,7 @@ async def websocket_exotel_stream(
             ttft_recorded = False
 
             async for token in brain.stream_response(llm_input):
-                if this_utterance_id != current_utterance_id:
+                if not session.is_current_utterance(this_utterance_id):
                     await send_exotel_clear()
                     return
 
@@ -1684,17 +2118,29 @@ async def websocket_exotel_stream(
 
             raw_response_text = "".join(response_tokens).strip()
             should_hangup = "[END_CALL]" in raw_response_text
+            booking_match = _BOOKING_TAG_RE.search(raw_response_text)
+
             clean_response = raw_response_text.replace("[END_CALL]", "").strip()
+            clean_response = _BOOKING_TAG_RE.sub("", clean_response).strip()
             # Strip a leading "xx-XX:" language-code prefix the model sometimes adds
             clean_response = re.sub(r'^[a-zA-Z]{2}-[A-Z]{2}:\s*', '', clean_response).strip()
 
-            if not clean_response or this_utterance_id != current_utterance_id:
+            if booking_match:
+                # NEVER trust the LLM's own claim of booking success - always
+                # speak a backend-computed, DB-verified confirmation/rejection.
+                clean_response = await _process_booking_tag(
+                    booking_match.group(1), session, t_config, language_code
+                )
+                _log_observability("booking_tag_detected", session=session, tag_body=booking_match.group(1))
+
+            if not clean_response or not session.is_current_utterance(this_utterance_id):
                 return
 
             logger.info(f"[EX-{connection_id}] 🧠 AGENT RESPONSE: '{clean_response}' (Hangup: {should_hangup})")
+            session.add_turn("assistant", clean_response)
 
             tts_connected = await tts_connect_task
-            if not tts_connected or this_utterance_id != current_utterance_id:
+            if not tts_connected or not session.is_current_utterance(this_utterance_id):
                 return
 
             norm_text = text_normalizer.normalize(clean_response, target_language_code=language_code)
@@ -1707,16 +2153,19 @@ async def websocket_exotel_stream(
                     post_audio_idle_timeout_sec=0.4,
                     max_duration_sec=12.0,
                 ):
-                    if this_utterance_id != current_utterance_id:
+                    if not session.is_current_utterance(this_utterance_id):
                         await send_exotel_clear()
                         break
-                    await send_exotel_media_paced(chunk, this_utterance_id)
+                    total_bytes_sent += await send_exotel_media_paced(chunk, this_utterance_id)
 
                 logger.info(f"[EX-{connection_id}] 🔊 Response stream finished")
 
-            if should_hangup and this_utterance_id == current_utterance_id:
+            if should_hangup and session.is_current_utterance(this_utterance_id):
                 logger.info(f"[EX-{connection_id}] 🛑 [END_CALL] received. Closing line...")
-                await asyncio.sleep(1.2)
+                telephony_bytes_per_sec = settings.EXOTEL_SAMPLE_RATE * settings.EXOTEL_BYTES_PER_SAMPLE
+                wait_sec = compute_playback_drain_seconds(total_bytes_sent, telephony_bytes_per_sec)
+                await asyncio.sleep(wait_sec)
+                _log_observability("call_hangup", session=session, total_bytes_sent=total_bytes_sent, drain_sec=wait_sec)
                 try:
                     await websocket.close(code=1000, reason="Call completed")
                 except Exception:
@@ -1738,7 +2187,7 @@ async def websocket_exotel_stream(
 
     async def stream_greeting_audio(greeting_text: str):
         """Stream initial call greeting."""
-        nonlocal is_speaking, speaking_hold_until, current_utterance_id
+        nonlocal is_speaking, speaking_hold_until
 
         is_speaking = True
         logger.info(f"[EX-{connection_id}] 🎤 Synthesizing greeting...")
@@ -1762,7 +2211,7 @@ async def websocket_exotel_stream(
                     async for chunk in turn_tts.stream_audio_chunks(
                         idle_timeout_sec=2.0, max_duration_sec=10.0
                     ):
-                        await send_exotel_media_paced(chunk, current_utterance_id)
+                        await send_exotel_media_paced(chunk, session.current_utterance_id)
                     logger.info(f"[EX-{connection_id}] ✓ Greeting audio sent to Exotel")
         except Exception as e:
             logger.error(f"[EX-{connection_id}] ❌ Greeting error: {e}")
@@ -1885,6 +2334,7 @@ async def websocket_exotel_stream(
                         stream_sid = msg.get("stream_sid") or start_data.get("stream_sid")
 
                         if stream_sid:
+                            session.set_call_id(stream_sid)
                             greeting_sent = True
                             logger.info(f"[EX-{connection_id}] 🏁 Call started, stream_sid={stream_sid}")
                             greeting_text = f"नमस्ते! {business_name} में कॉल करने के लिए धन्यवाद। मैं आपकी क्या मदद कर सकता हूँ?"
@@ -1951,6 +2401,9 @@ async def websocket_exotel_stream(
         except Exception:
             pass
 
+        _log_observability("call_ended", session=session, duration_sec=round(time.perf_counter() - call_start_time, 2))
+        session_manager.remove(connection_id)
+
         logger.info(f"[EX-{connection_id}] ✓ Exotel call stream ended")
 
 
@@ -1961,17 +2414,22 @@ async def _build_readiness() -> HealthCheckResponse:
         stt_ready, stt_message = await _probe_stt_service()
         llm_ready, llm_message = await _probe_llm_service()
         tts_ready, tts_message = await _probe_tts_service()
+        supabase_ready, supabase_message = await _probe_supabase_service()
 
         uptime = (datetime.now() - start_time).total_seconds()
-        all_ready = cache_available and stt_ready and llm_ready and tts_ready
+        # Supabase is intentionally treated as a SOFT dependency here (degraded,
+        # not unhealthy) since tenants covered by the hardcoded fallback config
+        # can still be served while Supabase is unreachable.
+        all_ready = cache_available and stt_ready and llm_ready and tts_ready and supabase_ready
         status = "healthy" if all_ready else "degraded"
 
         logger.debug(
-            "Readiness check: cache=%s stt=%s llm=%s tts=%s",
+            "Readiness check: cache=%s stt=%s llm=%s tts=%s supabase=%s",
             cache_available,
             stt_ready,
             llm_ready,
             tts_ready,
+            supabase_ready,
         )
 
         return HealthCheckResponse(
@@ -1986,6 +2444,8 @@ async def _build_readiness() -> HealthCheckResponse:
                 "stt": stt_message,
                 "llm": llm_message,
                 "tts": tts_message,
+                "supabase": supabase_message,
+                "active_sessions": session_manager.active_count(),
             },
         )
 
