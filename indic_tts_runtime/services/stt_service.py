@@ -132,7 +132,8 @@ class SarvamSaarasSTTClient:
                 f"language_code={language_code}&"
                 f"sample_rate={self.SAMPLE_RATE}&"
                 f"vad_signals={'true' if self.VAD_ENABLED else 'false'}&"
-                f"high_vad_sensitivity={'true' if effective_high_vad else 'false'}"
+                f"high_vad_sensitivity={'true' if effective_high_vad else 'false'}&"
+                f"flush_signal=true"
             )
 
             logger.info(f"Connecting to Sarvam STT: {url}")
@@ -239,6 +240,30 @@ class SarvamSaarasSTTClient:
 
         except Exception as e:
             logger.error(f"Error sending end-of-stream signal: {e}")
+            self._stats["errors"] += 1
+            return False
+
+    async def flush_buffer(self) -> bool:
+        """
+        Force Sarvam STT to immediately finalize/flush any buffered partial
+        transcription instead of waiting on its internal silence timeout.
+
+        Requires the connection to have been opened with flush_signal=true
+        (done unconditionally in connect()). Message schema per Sarvam's
+        AsyncAPI spec is {"type": "flush"} - NOT {"flush_signal": true}.
+
+        Returns:
+            True if the flush signal was sent successfully, False otherwise
+        """
+        if not self._connected or not self._ws:
+            return False
+
+        try:
+            await self._ws.send(json.dumps({"type": "flush"}))
+            logger.debug("Sent flush signal to Sarvam STT service")
+            return True
+        except Exception as e:
+            logger.error(f"Error sending flush signal: {e}")
             self._stats["errors"] += 1
             return False
 

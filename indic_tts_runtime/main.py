@@ -2528,6 +2528,11 @@ async def _websocket_exotel_stream_impl(
                 if event.event_type == "speech_ended":
                     last_activity_ts = time.perf_counter()
                     caller_speaking = False
+                    # Force Sarvam to finalize/flush the transcript for this
+                    # utterance immediately instead of waiting on its own
+                    # internal silence timeout (reduces tail latency).
+                    if stt_client:
+                        asyncio.create_task(stt_client.flush_buffer())
                     continue
 
                 if event.event_type in ("final_transcript", "transcript_updated"):
@@ -2535,13 +2540,25 @@ async def _websocket_exotel_stream_impl(
                     last_activity_ts = time.perf_counter()
                     caller_speaking = False
 
-                    # Ignore mic input while bot speaks. By the time a
-                    # transcript arrives, a genuine barge-in (speech_started
-                    # above) has already flipped is_speaking to False, so this
-                    # guard only blocks stale/echo-adjacent transcripts, not
-                    # legitimate barge-in speech.
-                    if is_speaking or time.perf_counter() < speaking_hold_until:
+                    # Echo-suppression window right after the bot finished
+                    # speaking - still drop these, they are very likely to be
+                    # picked-up echo of the bot's own audio, not real speech.
+                    if time.perf_counter() < speaking_hold_until:
                         continue
+
+                    if is_speaking:
+                        # Defensive barge-in fallback: a speech_started event
+                        # should already have flipped is_speaking to False
+                        # (see above), but if that event was lost/raced, do
+                        # NOT silently drop a genuine user transcript here -
+                        # interrupt the bot now and still process it.
+                        logger.info(
+                            f"[EX-{connection_id}] 🔴 Late barge-in: final_transcript arrived while "
+                            "is_speaking=True, interrupting bot audio instead of dropping transcript"
+                        )
+                        session.next_utterance_id()
+                        await send_exotel_clear()
+                        is_speaking = False
 
                     if event.event_type == "final_transcript" and transcript_text:
                         logger.info(f"[EX-{connection_id}] 🎤 STT TRANSCRIPT PART: '{transcript_text}'")
@@ -2689,10 +2706,17 @@ async def _websocket_exotel_stream_impl(
         except Exception:
             pass
 
-        try:
-            await websocket.close()
-        except Exception:
-            pass
+        # If an [END_CALL] hangup is already in flight (_finalize_hangup is
+        # sleeping to let the farewell audio drain before it closes with
+        # code=1000), don't race it with an immediate close here - that would
+        # cut the drain wait short / send a redundant close. Only close
+        # eagerly when no graceful hangup is pending (e.g. abrupt disconnect,
+        # session timeout, or error with no [END_CALL] in progress).
+        if not _hangup_finalizer_tasks:
+            try:
+                await websocket.close()
+            except Exception:
+                pass
 
         _log_observability("call_ended", session=session, duration_sec=round(time.perf_counter() - call_start_time, 2))
         session_manager.remove(connection_id)
