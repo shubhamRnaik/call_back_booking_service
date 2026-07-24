@@ -1829,6 +1829,10 @@ _BOOKING_LOCALIZED_STRINGS = {
         "hi-IN": "Main aapke isi number ka use kar raha hoon jisse aapne call kiya hai.",
         "en-IN": "I'll use the number you're calling from for this booking.",
     },
+    "need_datetime_escalated": {
+        "hi-IN": "Kripya date aur time ise tarah bataiye - jaise '25 July, shaam 6 baje' ya '25/07/2026 6 PM'.",
+        "en-IN": "Please give the date and time like this - e.g. '25 July, 6 PM' or '25/07/2026 6 PM'.",
+    },
 }
 
 
@@ -1883,7 +1887,18 @@ async def _process_booking_tag(
     tenant_tz = tenant_config.get("timezone") or "Asia/Kolkata"
     parsed = parse_user_datetime(when_phrase, tenant_tz=tenant_tz)
     if parsed is None:
+        failures = session.note_datetime_parse_failure()
+        logger.warning(
+            f"[{tenant_id}] date parse failed (attempt {failures}) for "
+            f"when_phrase='{when_phrase}'"
+        )
+        if failures >= 2:
+            # Retry ceiling: after 2 unparseable attempts, stop asking the
+            # same open-ended question and give the caller an explicit
+            # format to repeat back, so a parser gap can't loop forever.
+            return _localized("need_datetime_escalated", language_code)
         return _localized("need_datetime", language_code)
+    session.reset_datetime_parse_failures()
 
     date_str, start_mins, _default_end_mins, display_time_str = parsed
     slot_duration = matched_item.get("slot_duration_mins") or 30

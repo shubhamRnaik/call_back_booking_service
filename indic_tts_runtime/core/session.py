@@ -68,6 +68,12 @@ class CallSession:
         # for booking attempts (see services/supabase_service.py).
         self._attempt_nonce_counter: int = 0
 
+        # Consecutive failed parse_user_datetime() attempts this call (reset
+        # to 0 on a successful parse). Used to escalate to a more constrained
+        # prompt after repeated failures instead of looping forever asking
+        # the same open-ended question (see _process_booking_tag in main.py).
+        self.datetime_parse_failures: int = 0
+
     def set_call_id(self, call_id: str) -> None:
         """Update call_id once the real telephony call id becomes known
         (e.g. Exotel's stream_sid arrives in the 'start' event, after
@@ -118,6 +124,14 @@ class CallSession:
         """Clear booking-flow state (e.g. after a successful booking or an
         abandoned flow)."""
         self.extracted_slots = {}
+
+    def note_datetime_parse_failure(self) -> int:
+        """Increment and return the consecutive datetime-parse-failure count."""
+        self.datetime_parse_failures += 1
+        return self.datetime_parse_failures
+
+    def reset_datetime_parse_failures(self) -> None:
+        self.datetime_parse_failures = 0
 
     def to_observability_dict(self) -> dict[str, Any]:
         """Compact snapshot for structured JSON logging (Step 5 observability)."""

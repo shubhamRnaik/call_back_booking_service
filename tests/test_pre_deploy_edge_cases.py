@@ -948,6 +948,59 @@ class TestSectionF_DatetimeParsing:
         assert end_mins >= start_mins
         assert 0 <= end_mins <= 24 * 60 - 1, "end_mins must not wrap past midnight or go negative"
 
+    def test_F4_devanagari_kal_shaam_baje_parses(self, monkeypatch):
+        """Live-call bug (2026-07-24): pure Devanagari 'कल शाम 6 बजे' was
+        silently rejected because every keyword was Latin-only ('kal',
+        'shaam', 'baje')."""
+        fixed_now = datetime(2026, 7, 24, 10, 0, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed_now
+
+        monkeypatch.setattr(datetime_utils, "datetime", FixedDateTime)
+        result = parse_user_datetime("कल शाम 6 बजे", tenant_tz="Asia/Kolkata")
+        assert result is not None
+        date_str, start_mins, _end_mins, _display = result
+        assert date_str == "2026-07-25"
+        assert start_mins == 18 * 60
+
+    def test_F5_devanagari_aaj_time_only_still_ambiguous(self):
+        # No AM/PM, no qualifier -> hour alone stays ambiguous even with a
+        # recognized Devanagari day keyword.
+        assert parse_user_datetime("आज 6 बजे") is None
+
+    def test_F6_absolute_date_english_with_year(self):
+        result = parse_user_datetime("25th July, 2026, 6 o'clock evening")
+        assert result is not None
+        date_str, start_mins, _end_mins, _display = result
+        assert date_str == "2026-07-25"
+        assert start_mins == 18 * 60
+
+    def test_F7_absolute_date_devanagari_month(self):
+        result = parse_user_datetime("25 जुलाई 2026 शाम 6 बजे")
+        assert result is not None
+        date_str, start_mins, _end_mins, _display = result
+        assert date_str == "2026-07-25"
+        assert start_mins == 18 * 60
+
+    def test_F8_absolute_date_numeric_ddmmyyyy(self):
+        result = parse_user_datetime("25/07/2026 6 PM")
+        assert result is not None
+        date_str, _start_mins, _end_mins, _display = result
+        assert date_str == "2026-07-25"
+
+    def test_F9_bajkar_minute_phrasing(self):
+        result = parse_user_datetime("कल शाम 6 बजकर 30 मिनट")
+        assert result is not None
+        _date_str, start_mins, _end_mins, _display = result
+        assert start_mins == 18 * 60 + 30
+
+    def test_F10_explicit_past_year_rejected(self):
+        # An explicit (not omitted) past year must never be silently accepted.
+        assert parse_user_datetime("25 July 2020, 6 PM") is None
+
 
 # =============================================================================
 # Section G - Config / startup sanity
